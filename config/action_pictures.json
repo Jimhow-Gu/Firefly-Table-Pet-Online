@@ -1,0 +1,34 @@
+{
+    "eat": {
+        "path": "data\\assets\\images\\firefly\\actions\\eat",
+        "type": ".png"
+    },
+    "Standby": {
+        "path": "data\\assets\\images\\firefly\\actions\\Standby",
+        "type": ".png"
+    },
+    "mention": {
+        "path": "data\\assets\\images\\firefly\\actions\\mention",
+        "type": ".png"
+    },
+    "sleep": {
+        "path": "data\\assets\\images\\firefly\\actions\\sleep",
+        "type": ".png"
+    },
+    "love": {
+        "path": "data\\assets\\images\\firefly\\actions\\love",
+        "type": ".png"
+    },
+    "discomfort": {
+        "path": "data\\assets\\images\\firefly\\actions\\discomfort",
+        "type": ".png"
+    },
+    "left": {
+        "path": "data\\assets\\images\\firefly\\actions\\left",
+        "type": ".png"
+    },
+    "right": {
+        "path": "data\\assets\\images\\firefly\\actions\\right",
+        "type": ".png"
+    }
+}

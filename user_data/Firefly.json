@@ -1,0 +1,65 @@
+{
+  "uid": "Trailblazer-520131499",
+  "username": "流萤",
+  "userid": "Firefly",
+  "password": "123456",
+  "birthday": "2008-05-15",
+  "register_time": "2026-05-15 19:03:34",
+  "balance": 1008,
+  "credit": 0,
+  "last_sign_date": "2026-05-16",
+  "banned": false,
+  "banned_until": null,
+  "redeemed_codes": [
+    "cake"
+  ],
+  "redeem_history": [
+    "2026-05-16 01:50:04 - 签到获得 36000 信用点",
+    "2026-05-18 22:03:13 - 使用兑换码 cake",
+    "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x9",
+    "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x999"
+  ],
+  "cursor_style": "Firefly",
+  "pet_size": "small",
+  "owned_clothes": [
+    "normal"
+  ],
+  "mailbox": [
+    {
+      "id": "678e4d84-8f33-4d7f-a83f-1facac0384f6",
+      "title": "管理员赠送物品",
+      "content": "管理员 admin 赠送了 橡木蛋糕卷。",
+      "sender": "系统",
+      "timestamp": "2026-05-18T10:48:16.266033",
+      "read": false,
+      "claimed": true,
+      "items": [
+        {
+          "type": "cake",
+          "amount": 9
+        }
+      ]
+    },
+    {
+      "id": "0237c1fb-282c-4562-9523-7347a9138702",
+      "title": "兑换码奖励",
+      "content": "成功使用兑换码 cake，获得以下物品。",
+      "sender": "系统",
+      "timestamp": "2026-05-18T22:03:13.196267",
+      "read": true,
+      "claimed": true,
+      "items": [
+        {
+          "type": "cake",
+          "amount": 999
+        }
+      ]
+    }
+  ],
+  "last_state": "Discomfort",
+  "last_x": 1359,
+  "last_y": 623,
+  "star_rail_tickets": 0,
+  "last_birthday_greet_year": null,
+  "last_feed_time": null
+}

@@ -1,0 +1,130 @@
+{
+  "Firefly": {
+    "reward": 10,
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "system",
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null,
+    "items": [
+      {
+        "type": "cake",
+        "amount": 10
+      }
+    ]
+  },
+  "love": {
+    "reward": 10,
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-15 20:10:49",
+    "target_user": "Gubwin",
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [
+      "Gubwin"
+    ],
+    "revoked_by": null,
+    "revoked_time": null,
+    "items": [
+      {
+        "type": "cake",
+        "amount": 10
+      }
+    ]
+  },
+  "test": {
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-16 19:34:10",
+    "target_user": "admin",
+    "items": [
+      {
+        "type": "cake",
+        "amount": 10
+      }
+    ],
+    "expire_time": "2026-05-17T19:34:10.354854",
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
+  },
+  "test1": {
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-16 20:18:29",
+    "target_user": "admin",
+    "items": [
+      {
+        "type": "cake",
+        "amount": 999
+      }
+    ],
+    "expire_time": "2026-05-17T20:18:29.231869",
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
+  },
+  "newbee": {
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-18 10:15:32",
+    "target_user": "Gubwin",
+    "items": [
+      {
+        "type": "cake",
+        "amount": 9999
+      }
+    ],
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
+  },
+  "cake": {
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-18 22:03:00",
+    "target_user": "Firefly",
+    "items": [
+      {
+        "type": "cake",
+        "amount": 999
+      }
+    ],
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
+  },
+  "t1": {
+    "max_uses": 1,
+    "used_count": 1,
+    "created_by": "admin",
+    "created_time": "2026-05-19 21:08:34",
+    "target_user": "Gubwin",
+    "items": [
+      {
+        "type": "cake",
+        "amount": 999
+      }
+    ],
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
+  }
+}

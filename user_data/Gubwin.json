@@ -1,0 +1,52 @@
+{
+  "uid": "user-666666666",
+  "username": "Gubwin",
+  "userid": "Gubwin",
+  "password": "123456",
+  "birthday": "2008-12-01",
+  "register_time": "2026-05-18 21:58:04",
+  "balance": 1993,
+  "credit": 21600,
+  "last_sign_date": "2026-05-31T11:23:54.864347",
+  "banned": false,
+  "banned_until": null,
+  "redeemed_codes": [
+    "t1"
+  ],
+  "redeem_history": [
+    "2026-05-18 21:58:04 - 注册账号，获得20橡木蛋糕卷",
+    "2026-05-19 21:14:37 - 使用兑换码 t1",
+    "2026-05-19 22:32:36 - 邮件领取: 橡木蛋糕卷 x999",
+    "2026-05-31 11:23:54 - 签到获得 7200 信用点"
+  ],
+  "cursor_style": "None",
+  "pet_size": "normal",
+  "owned_clothes": [
+    "normal",
+    "26_Newyear"
+  ],
+  "mailbox": [
+    {
+      "id": "f3fe3d8c-9dfc-42af-b150-17fb5bc65028",
+      "title": "兑换码奖励",
+      "content": "成功使用兑换码 t1，获得以下物品。",
+      "sender": "系统",
+      "timestamp": "2026-05-19T21:14:37.405344",
+      "read": true,
+      "claimed": true,
+      "items": [
+        {
+          "type": "cake",
+          "amount": 999
+        }
+      ]
+    }
+  ],
+  "star_rail_tickets": 1,
+  "last_birthday_greet_year": null,
+  "last_state": "Discomfort",
+  "last_x": 1393,
+  "last_y": 476,
+  "last_feed_time": null,
+  "volume": 0.5
+}

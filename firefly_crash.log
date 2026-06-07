@@ -1,0 +1,66 @@
+
+=== 2026-06-07 01:43:20.718718 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 509, in _on_message_received
+    self._process_message_line(msg)
+AttributeError: 'MultiplayerClient' object has no attribute '_process_message_line'
+
+=== 2026-06-07 01:44:05.385611 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1845, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 01:48:56.329787 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    self.firefly.toggle_online_list()
+KeyboardInterrupt
+
+=== 2026-06-07 01:52:31.545838 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1840, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 01:55:22.611437 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 01:57:59.262699 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 02:36:22.498598 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 02:36:40.337875 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 10:27:08.994151 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1844, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
+
+=== 2026-06-07 10:49:02.812631 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 3421, in eventFilter
+    self.wheelEvent(event)
+KeyboardInterrupt
+
+=== 2026-06-07 11:08:33.740700 ===
+Traceback (most recent call last):
+  File "D:\新默认保存\3D\FireFly-Onine\main.py", line 1847, in nativeEventFilter
+    def nativeEventFilter(self, eventType, message):
+KeyboardInterrupt
