@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>流萤桌宠开拓月历</title>
+    <script src="https://cdn.tailwindcss.com">
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet" />
+    <style>
+        * {
+            font-family: 'Noto Sans SC', sans-serif;
+        }
+        /* ===== 全局背景 + 底层暗蒙版 ===== */
+        body {
+            background-color: #0D0D0D;
+            background-image: url('../assets/images/back.png');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            min-height: 100vh;
+            overflow-x: hidden;
+            margin: 0;
+            padding: 0;
+            position: relative;
+        }
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.22);
+            z-index: -1;
+            pointer-events: none;
+        }
+        /* ===== 萤火虫粒子 ===== */
+        .firefly {
+            position: fixed;
+            width: 4px;
+            height: 4px;
+            background: #D4A857;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #D4A857, 0 0 20px #D4A857, 0 0 30px rgba(212, 168, 87, 0.3);
+            pointer-events: none;
+            animation: float 15s infinite ease-in-out;
+            opacity: 0.6;
+            z-index: 0;
+        }
+        @keyframes float {
+            0%,
+            100% {
+                transform: translateY(0) translateX(0);
+                opacity: 0.2;
+            }
+            25% {
+                transform: translateY(-30px) translateX(20px);
+                opacity: 0.7;
+            }
+            50% {
+                transform: translateY(-10px) translateX(-20px);
+                opacity: 0.4;
+            }
+            75% {
+                transform: translateY(-40px) translateX(10px);
+                opacity: 0.6;
+            }
+        }
+        /* ===== 毛玻璃卡片 ===== */
+        .glass-card {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            transition: all 0.3s ease;
+        }
+        .glass-card:hover {
+            border-color: rgba(212, 168, 87, 0.25);
+            box-shadow: 0 0 40px rgba(212, 168, 87, 0.08);
+            transform: translateY(-2px);
+        }
+        /* ===== 标题装饰线 ===== */
+        .divider-glow {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(212, 168, 87, 0.35), transparent);
+        }
+        /* ===== 标题左侧装饰条 ===== */
+        .title-decoration::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 4px;
+            height: 60%;
+            background: linear-gradient(180deg, #D4A857, #8B6914);
+            border-radius: 2px;
+        }
+        /* ===== 进度条 ===== */
+        .progress-bar {
+            background: linear-gradient(90deg, #D4A857, #8B6914);
+            border-radius: 999px;
+            box-shadow: 0 0 16px rgba(212, 168, 87, 0.35);
+            transition: width 1s ease-out;
+            height: 100%;
+        }
+        .progress-bg {
+            background: rgba(0, 0, 0, 0.45);
+            border-radius: 999px;
+            height: 8px;
+            overflow: hidden;
+        }
+        /* ===== 角色图片 ===== */
+        .character-img {
+            filter: drop-shadow(0 0 30px rgba(212, 168, 87, 0.15));
+            transition: all 0.4s ease;
+            border-radius: 16px;
+        }
+        .character-img:hover {
+            filter: drop-shadow(0 0 50px rgba(212, 168, 87, 0.25));
+            transform: translateY(-3px);
+        }
+        /* ===== 物品图标 ===== */
+        .item-icon {
+            width: 52px;
+            height: 52px;
+            object-fit: contain;
+            filter: drop-shadow(0 0 12px rgba(0, 0, 0, 0.6));
+            border-radius: 12px;
+        }
+        /* ===== 数据图标容器 ===== */
+        .data-icon-box {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 14px;
+            font-size: 20px;
+            margin: 0 auto 10px;
+            background: rgba(0, 0, 0, 0.4);
+        }
+        /* ===== 天气卡片 ===== */
+        #weather {
+            font-size: 15px;
+            color: #e0cd9c;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 12px 16px;
+            border-radius: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            display: inline-block;
+            line-height: 2;
+            min-width: 140px;
+            text-align: center;
+            text-shadow: 0 1px 4px #000;
+        }
+        /* ===== 布局辅助 ===== */
+        .right-col {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .right-col .weather-card {
+            margin-top: auto;
+        }
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.875rem;
+            margin-bottom: 4px;
+        }
+        .progress-label .label {
+            color: #b8a578;
+            text-shadow: 0 1px 3px #000;
+        }
+        .progress-label .value {
+            color: #F0D89C;
+            text-shadow: 0 1px 4px #000;
+        }
+        .weather-line {
+            display: block;
+        }
+        /* ===== 寄语卡片 ===== */
+        .greeting-card .greeting-name {
+            font-size: 18px;
+            font-weight: 600;
+            color: #F0D89C;
+            text-shadow: 1px 1px 3px #000, -1px -1px 3px #000;
+        }
+        .greeting-card .greeting-uid {
+            font-size: 13px;
+            color: #a08c62;
+            margin-top: 2px;
+            text-shadow: 0 1px 2px #000;
+        }
+        .greeting-card .greeting-quote {
+            margin-bottom: 0;
+            font-size: 14px;
+            color: #e0cd9c;
+            font-style: italic;
+            margin-top: 8px;
+            line-height: 1.6;
+            min-height: 3.2em;
+            text-shadow: 0 1px 3px #000;
+        }
+        /* ===== 左侧列布局 ===== */
+        .left-col {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        .left-col .resource-card {
+            flex-shrink: 0;
+        }
+        .left-col .interact-card {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .left-col .interact-card .card-content {
+            flex: 1;
+        }
+        .left-col .interact-card .grid {
+            height: 100%;
+            align-content: stretch;
+        }
+        .left-col .interact-card .grid>div {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        /* ===== 全局文字 ===== */
+        body {
+            color: #e0cd9c;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+        }
+        h1 {
+            color: #fff !important;
+            text-shadow: 1px 1px 4px #000, -1px -1px 4px #000, 0 0 30px rgba(212, 168, 87, 0.12);
+        }
+        .glass-card h2,
+        .title-decoration {
+            color: #F0D89C !important;
+            font-weight: 600;
+            text-shadow: 1px 1px 3px #000, -1px -1px 3px #000, 0 2px 6px rgba(0, 0, 0, 0.8);
+        }
+        .glass-card .text-3xl,
+        .text-2xl {
+            color: #ffffff !important;
+            font-weight: 700;
+            text-shadow: 1px 1px 3px #000, -1px -1px 3px #000, 0 3px 8px rgba(0, 0, 0, 0.8);
+        }
+        .text-yellow-200,
+        .text-pink-200,
+        .text-blue-200,
+        .text-green-200,
+        .text-orange-200,
+        .text-purple-200,
+        .text-cyan-200 {
+            color: #D4A857 !important;
+            text-shadow: 1px 1px 3px #000, -1px -1px 3px #000, 0 0 8px rgba(0, 0, 0, 0.7);
+        }
+        .text-cyan-200\/50 {
+            color: rgba(240, 216, 156, 0.65) !important;
+            text-shadow: 0 1px 3px #000;
+        }
+        .text-gray-400 {
+            color: #b8a578 !important;
+            text-shadow: 0 1px 3px #000;
+        }
+        .text-gray-100 {
+            color: #e0cd9c;
+        }
+        .text-gray-200 {
+            color: #e0cd9c !important;
+            text-shadow: 0 1px 3px #000;
+        }
+        .text-gray-300 {
+            color: #d4bc90 !important;
+            text-shadow: 0 1px 3px #000;
+        }
+        footer .text-gray-500 {
+            color: #806e4c;
+            text-shadow: 0 1px 2px #000;
+        }
+        /* ===== 背景色统一 ===== */
+        .bg-pink-500\/10,
+        .bg-blue-400\/10,
+        .bg-cyan-500\/10,
+        .bg-purple-500\/10,
+        .bg-green-500\/10,
+        .bg-orange-500\/10 {
+            background: rgba(0, 0, 0, 0.4) !important;
+        }
+        .hover\:bg-pink-500\/5:hover,
+        .hover\:bg-blue-500\/5:hover,
+        .hover\:bg-cyan-500\/5:hover,
+        .hover\:bg-purple-500\/5:hover,
+        .hover\:bg-green-500\/5:hover,
+        .hover\:bg-orange-500\/5:hover {
+            background: rgba(0, 0, 0, 0.3) !important;
+        }
+        .bg-white\/5 {
+            background: rgba(0, 0, 0, 0.4) !important;
+        }
+        .border-white\/5 {
+            border-color: rgba(255, 255, 255, 0.08) !important;
+        }
+        .border-white\/10 {
+            border-color: rgba(255, 255, 255, 0.1) !important;
+        }
+        .glass-card .rounded-xl.bg-white\/5 {
+            background: rgba(0, 0, 0, 0.4) !important;
+        }
+        .glass-card .rounded-xl.bg-white\/5:hover {
+            background: rgba(0, 0, 0, 0.55) !important;
+        }
+        .rounded-xl {
+            border-radius: 16px !important;
+        }
+        .character-img {
+            border-radius: 18px;
+        }
+        .item-icon {
+            border-radius: 12px;
+        }
+        @media (min-width: 768px) {
+            .md\:col-span-2 {
+                grid-column: span 2 / span 2;
+            }
+            .md\:w-56 {
+                width: 14rem;
+            }
+            .md\:grid-cols-2 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .md\:grid-cols-3 {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+            .md\:grid-cols-4 {
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+            }
+            .md\:flex-row {
+                flex-direction: row;
+            }
+            .md\:py-12 {
+                padding-top: 3rem;
+                padding-bottom: 3rem;
+            }
+            .md\:text-left {
+                text-align: left;
+            }
+            .md\:text-5xl {
+                font-size: 3rem;
+                line-height: 1;
+            }
+            .md\:text-base {
+                font-size: 1rem;
+                line-height: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body class="text-gray-100">
+    <div id="fireflies"></div>
+    <div class="relative z-10 max-w-6xl mx-auto px-4 py-8 md:py-12">
+        <!-- ===== HEADER ===== -->
+        <header class="flex flex-col md:flex-row items-center justify-between gap-8 mb-10">
+            <div class="text-center md:text-left flex-1">
+                <div class="inline-block mb-4">
+                    <h1 class="text-4xl md:text-5xl font-bold text-cyan-300 tracking-wider" style="text-shadow: 0 0 30px rgba(212,168,87,0.08);">
+                        开拓月历
+                    </h1>
+                    <div class="divider-glow mt-3"></div>
+                </div>
+                <p class="text-gray-200 text-sm md:text-base mt-2">
+                    「飞萤扑火，向死而生!」 · 2026年08月（单机模式）
+                </p>
+                <p class="text-cyan-200/50 text-xs mt-3">
+                    今天也要加油呀！
+                </p>
+            </div>
+            <div class="w-48 md:w-56 flex-shrink-0">
+                <img id="randomCharacterImg"
+                src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' fill='%231a1a3e'/%3E%3Ctext x='50' y='110' font-family='Arial' font-size='20' fill='%23666'%3E加载中...%3C/text%3E%3C/svg%3E"
+                alt="流萤"
+                class="character-img w-full h-auto object-contain"
+                onerror="this.src='https://s2.loli.net/2024/06/18/9ZxXqYbRnLkf7dS.png'"
+                />
+            </div>
+        </header>
+        <!-- ===== 月度核心概览 ===== -->
+        <section class="mb-8">
+            <h2 class="relative title-decoration text-xl font-semibold text-cyan-200 pl-4 mb-4">
+                ✦ 月度核心概览
+            </h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="glass-card p-5 text-center">
+                    <div class="text-3xl font-bold text-cyan-200">2</div>
+                    <div class="text-gray-400 text-sm mt-1">本月互动次数</div>
+                </div>
+                <div class="glass-card p-5 text-center">
+                    <div class="text-3xl font-bold text-purple-400">20</div>
+                    <div class="text-gray-400 text-sm mt-1">本月打开桌宠次数</div>
+                </div>
+                <div class="glass-card p-5 text-center">
+                    <div class="text-3xl font-bold text-cyan-200">1</div>
+                    <div class="text-gray-400 text-sm mt-1">本月签到天数</div>
+                </div>
+                <div class="glass-card p-5 text-center">
+                    <div class="text-3xl font-bold text-purple-400">1</div>
+                    <div class="text-gray-400 text-sm mt-1">本月好感度提升</div>
+                </div>
+            </div>
+        </section>
+        <!-- ===== 主网格 ===== -->
+        <div class="grid md:grid-cols-3 gap-6">
+            <!-- 左 + 中列 -->
+            <div class="md:col-span-2 left-col space-y-6">
+                <!-- 本月资源收获 -->
+                <div class="glass-card p-6 resource-card">
+                    <h2 class="relative title-decoration text-xl font-semibold text-cyan-200 pl-4 mb-5">
+                        ✦ 本月资源收获
+                    </h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="flex items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/5 hover:border-yellow-300/20 transition-all">
+                            <img src="../assets/images/Credit/Item_Credit.png" alt="信用点" class="item-icon" />
+                            <div>
+                                <div class="text-3xl font-bold text-yellow-200">7200</div>
+                                <div class="text-gray-400 text-sm mt-1">本月获取信用点</div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/5 hover:border-pink-300/20 transition-all">
+                            <img src="../assets/images/foods/Cake.png" alt="蛋糕卷" class="item-icon" />
+                            <div>
+                                <div class="text-3xl font-bold text-pink-200">0</div>
+                                <div class="text-gray-400 text-sm mt-1">本月购买蛋糕卷数量</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 桌宠互动明细 -->
+                <div class="glass-card purple-card p-6 interact-card">
+                    <h2 class="relative title-decoration text-xl font-semibold text-purple-300 pl-4 mb-5">
+                        ✦ 桌宠互动明细
+                    </h2>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 card-content">
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-pink-500/5 transition-all">
+                            <div class="data-icon-box bg-pink-500/10 text-pink-300 mx-auto">💖</div>
+                            <div class="text-2xl font-bold text-pink-200">1</div>
+                            <div class="text-gray-400 text-sm mt-1">改善好感度次数</div>
+                        </div>
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-blue-500/5 transition-all">
+                            <div class="data-icon-box bg-blue-400/10 text-blue-300 mx-auto">💤</div>
+                            <div class="text-2xl font-bold text-blue-200">0</div>
+                            <div class="text-gray-400 text-sm mt-1">桌宠睡觉次数</div>
+                        </div>
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-cyan-500/5 transition-all">
+                            <div class="data-icon-box bg-cyan-500/10 text-cyan-300 mx-auto">🖱️</div>
+                            <div class="text-2xl font-bold text-cyan-200">20</div>
+                            <div class="text-gray-400 text-sm mt-1">本月打开桌宠次数</div>
+                        </div>
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-purple-500/5 transition-all">
+                            <div class="data-icon-box bg-purple-500/10 text-purple-300 mx-auto">🤝</div>
+                            <div class="text-2xl font-bold text-purple-200">2</div>
+                            <div class="text-gray-400 text-sm mt-1">互动次数</div>
+                        </div>
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-green-500/5 transition-all">
+                            <div class="data-icon-box bg-green-500/10 text-green-300 mx-auto">📅</div>
+                            <div class="text-2xl font-bold text-green-200">1</div>
+                            <div class="text-gray-400 text-sm mt-1">签到次数</div>
+                        </div>
+                        <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-orange-500/5 transition-all">
+                            <div class="data-icon-box bg-orange-500/10 text-orange-300 mx-auto">💬</div>
+                            <div class="text-2xl font-bold text-orange-200">0</div>
+                            <div class="text-gray-400 text-sm mt-1">在线对话次数</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- 右侧 -->
+            <div class="right-col space-y-6">
+                <!-- 养成进度 -->
+                <div class="glass-card p-6">
+                    <h2 class="relative title-decoration text-xl font-semibold text-cyan-200 pl-4 mb-5">
+                        📊 养成进度
+                    </h2>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="progress-label">
+                                <span class="label">信用点收集</span>
+                                <span class="value">7200 / 223200（3%）</span>
+                            </div>
+                            <div class="progress-bg">
+                                <div class="progress-bar" style="width: 3%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="progress-label">
+                                <span class="label">月度签到</span>
+                                <span class="value">1 / 31（3%）</span>
+                            </div>
+                            <div class="progress-bg">
+                                <div class="progress-bar" style="width: 3%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="progress-label">
+                                <span class="label">互动目标</span>
+                                <span class="value">2 / 500（0%）</span>
+                            </div>
+                            <div class="progress-bg">
+                                <div class="progress-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="progress-label">
+                                <span class="label">蛋糕卷购买</span>
+                                <span class="value">0 / 72（0%）</span>
+                            </div>
+                            <div class="progress-bg">
+                                <div class="progress-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 寄语 -->
+                <div class="glass-card p-6 text-center greeting-card">
+                    <div class="greeting-name">流萤</div>
+                    <div class="greeting-uid">UID: Trailblazer-520131499</div>
+                    <div class="greeting-quote" id="randomQuote">✨ 加载中...</div>
+                </div>
+                <!-- 天气 -->
+                <div class="glass-card p-4 text-center weather-card">
+                    <div id="weather" class="mx-auto">
+                        🌤️ 正在获取天气...
+                    </div>
+                </div>
+            </div>
+        </div>
+        <footer class="text-center mt-10 text-gray-500 text-xs">
+            <div class="divider-glow mb-4"></div>
+            <p>流萤桌宠开拓月历，仅供娱乐参考！</p>
+        </footer>
+    </div>
+    <!-- ===== 音乐播放器：页面载入自动播放，移除静音属性 ===== -->
+    <audio id="bgMusic" autoplay loop style="display:none;">
+        <source src="https://music.163.com/song/media/outer/url?id=2034615687.mp3" type="audio/mpeg">
+
+        <script>
+            // 页面加载后尝试自动播放，浏览器拦截则点击页面触发播放
+            window.addEventListener('load', () => {
+                const audio = document.getElementById('bgMusic');
+                audio.play().catch(() => {
+                    const playHandler = () => {
+                        audio.play();
+                        document.removeEventListener('click', playHandler);
+                    };
+                    document.addEventListener('click', playHandler);
+                });
+            });
+
+            // ===== 其他脚本（萤火虫、图片、语录、天气、进度条） =====
+            (function createFireflies() {
+                const container = document.getElementById('fireflies');
+                const count = 35;
+                for (let i = 0; i < count; i++) {
+                    const fly = document.createElement('div');
+                    fly.className = 'firefly';
+                    fly.style.left = Math.random() * 100 + 'vw';
+                    fly.style.top = Math.random() * 100 + 'vh';
+                    fly.style.animationDelay = Math.random() * 15 + 's';
+                    fly.style.animationDuration = (10 + Math.random() * 10) + 's';
+                    const size = 2 + Math.random() * 4;
+                    fly.style.width = size + 'px';
+                    fly.style.height = size + 'px';
+                    if (Math.random() > 0.6) {
+                        fly.style.background = '#8B6914';
+                        fly.style.boxShadow = '0 0 10px #8B6914, 0 0 20px #8B6914';
+                    }
+                    container.appendChild(fly);
+                }
+            })();
+            (function randomizeCharacterImage() {
+                const img = document.getElementById('randomCharacterImg');
+                if (!img) return;
+                const urls = [
+                    'https://upload-bbs.miyoushe.com/upload/2024/10/26/191335050/c0ad5c77b160d12a82925f3200bc20a0_2626685126024980454.png?x-oss-process=image//resize,s_600/quality,q_80/auto-orient,0/interlace,1/format,png',
+                    'https://upload-bbs.miyoushe.com/upload/2024/10/26/191335050/35195f4f48650e0e3a490d8bcb08b9d8_3330486580823987097.png?x-oss-process=image//resize,s_600/quality,q_80/auto-orient,0/interlace,1/format,png',
+                    'https://upload-bbs.miyoushe.com/upload/2024/10/26/191335050/6bdbc655fd0f0c28bcefb2daf1213b02_7832485356985846361.png?x-oss-process=image//resize,s_600/quality,q_80/auto-orient,0/interlace,1/format,png',
+                    'https://upload-bbs.miyoushe.com/upload/2024/10/26/191335050/d4702c1b4bd1cf573db80b66d8c187a2_2303683128062728635.png?x-oss-process=image//resize,s_600/quality,q_80/auto-orient,0/interlace,1/format,png'
+                ];
+                img.src = urls[Math.floor(Math.random() * urls.length)];
+            })();
+            (function setRandomQuote() {
+                const quotes = [
+                    "✨ 今天的你也闪闪发光呢！",
+                    "🌸 愿你的每一天都如花般绽放。",
+                    "🌙 夜色再深，也有萤火为你引路。",
+                    "☀️ 新的一天，从微笑开始吧！",
+                    "🌟 你值得这世间所有的美好。",
+                    "💫 星光不问赶路人，时光不负有心人。",
+                    "🌱 慢慢来，比较快。",
+                    "🌈 风雨过后，总会有彩虹。",
+                    "🎵 生活不止眼前的苟且，还有诗和远方。",
+                    "🍀 幸运总会眷顾努力的人。",
+                    "💖 愿你所遇皆温柔，所行皆坦途。",
+                    "🌊 心之所向，素履以往。",
+                    "🔥 保持热爱，奔赴山海。",
+                    "🌺 你若盛开，清风自来。",
+                    "⭐ 你是自己故事里的主角。",
+                    "🌿 每一步都算数。",
+                    "🎈 愿你永远保持好奇与天真。",
+                    "🌻 向阳而生，逐光而行。",
+                    "💪 今天也要元气满满哦！",
+                    "🌌 宇宙山河浪漫，生活点滴温暖。",
+                    "🍃 轻舟已过万重山。",
+                    "🌠 愿你的世界永远有光。"
+                ];
+                document.getElementById('randomQuote').textContent = quotes[Math.floor(Math.random() * quotes.length)];
+            })();
+
+            // ============================================================
+            //  ⭐ 天气显示：仅翻译中国地名，其余保留英文
+            // ============================================================
+            (function fetchWeather() {
+                const wd = document.getElementById('weather');
+
+                // ---------- 仅包含中国地名的翻译映射（含港澳台） ----------
+                const cityTranslationMap = {
+                    // 直辖市
+                    'beijing': '北京',
+                    'shanghai': '上海',
+                    'tianjin': '天津',
+                    'chongqing': '重庆',
+                    // 省份 / 省会 / 主要城市
+                    'guangzhou': '广州',
+                    'shenzhen': '深圳',
+                    'chengdu': '成都',
+                    'hangzhou': '杭州',
+                    'wuhan': '武汉',
+                    'nanjing': '南京',
+                    'suzhou': '苏州',
+                    'xian': '西安',
+                    'changsha': '长沙',
+                    'zhengzhou': '郑州',
+                    'dongguan': '东莞',
+                    'qingdao': '青岛',
+                    'shenyang': '沈阳',
+                    'dalian': '大连',
+                    'kunming': '昆明',
+                    'xiamen': '厦门',
+                    'fuzhou': '福州',
+                    'nanning': '南宁',
+                    'guiyang': '贵阳',
+                    'lanzhou': '兰州',
+                    'shijiazhuang': '石家庄',
+                    'taiyuan': '太原',
+                    'jinan': '济南',
+                    'hefei': '合肥',
+                    'changchun': '长春',
+                    'haerbin': '哈尔滨',
+                    'hohhot': '呼和浩特',
+                    'yinchuan': '银川',
+                    'urumqi': '乌鲁木齐',
+                    'lasa': '拉萨',
+                    'xining': '西宁',
+                    // 港澳台
+                    'macau': '澳门',
+                    'hongkong': '香港',
+                    'taibei': '台北',
+                    'kaohsiung': '高雄',
+                    'taichung': '台中',
+                    'tainan': '台南',
+                    // 其他中国城市（补充）
+                    'yangshe': '杨舍',
+                    'wuxi': '无锡',
+                    'ningbo': '宁波',
+                    'wenzhou': '温州',
+                    'jinhua': '金华',
+                    'shaoxing': '绍兴',
+                    'yangzhou': '扬州',
+                    'zhenjiang': '镇江',
+                    'taizhou': '泰州',
+                    'nantong': '南通',
+                    'yancheng': '盐城',
+                    'huai\'an': '淮安',
+                    'suqian': '宿迁',
+                    'xuzhou': '徐州',
+                    'lianyungang': '连云港',
+                    'weifang': '潍坊',
+                    'yantai': '烟台',
+                    'weihai': '威海',
+                    'rizhao': '日照',
+                    'linyi': '临沂',
+                    'jining': '济宁',
+                    'heze': '菏泽',
+                    'binzhou': '滨州',
+                    'dezhou': '德州',
+                    'liaocheng': '聊城',
+                    'zaozhuang': '枣庄',
+                    'zibo': '淄博',
+                    'dongying': '东营',
+                    'quanzhou': '泉州',
+                    'zhangzhou': '漳州',
+                    'putian': '莆田',
+                    'ningde': '宁德',
+                    'longyan': '龙岩',
+                    'sanming': '三明',
+                    'nanping': '南平',
+                    'zhuhai': '珠海',
+                    'foshan': '佛山',
+                    'jiangmen': '江门',
+                    'zhaoqing': '肇庆',
+                    'huizhou': '惠州',
+                    'meizhou': '梅州',
+                    'shantou': '汕头',
+                    'jieyang': '揭阳',
+                    'chaozhou': '潮州',
+                    'shanwei': '汕尾',
+                    'yangjiang': '阳江',
+                    'maoming': '茂名',
+                    'zhanjiang': '湛江',
+                    'haikou': '海口',
+                    'sanya': '三亚',
+                    'guilin': '桂林',
+                    'liuzhou': '柳州',
+                    'wuzhou': '梧州',
+                    'beihai': '北海',
+                    'yulin': '玉林',
+                    'chongzuo': '崇左',
+                    'baise': '百色',
+                    'hechi': '河池',
+                    'luzhou': '泸州',
+                    'deyang': '德阳',
+                    'mianyang': '绵阳',
+                    'guangyuan': '广元',
+                    'nanchong': '南充',
+                    'yibin': '宜宾',
+                    'dazhou': '达州',
+                    'ya\'an': '雅安',
+                    'meishan': '眉山',
+                    'ziyang': '资阳',
+                    'panzhihua': '攀枝花',
+                    'ganzi': '甘孜',
+                    'aba': '阿坝',
+                    'liangshan': '凉山',
+                    'guiyang': '贵阳',
+                    'zunyi': '遵义',
+                    'anshun': '安顺',
+                    'bijie': '毕节',
+                    'tongren': '铜仁',
+                    'lishui': '丽水',
+                    'quzhou': '衢州',
+                    'huzhou': '湖州',
+                    'jiaxing': '嘉兴',
+                    'taizhou': '台州',
+                    // 更多中国城市可按需添加
+                };
+
+                // ---------- 完整天气翻译映射 ----------
+                const transMap = {
+                    'sunny': '晴',
+                    'clear': '晴朗',
+                    'partly cloudy': '部分多云',
+                    'cloudy': '多云',
+                    'overcast': '阴天',
+                    'mist': '薄雾',
+                    'fog': '雾',
+                    'patchy fog': '局部雾',
+                    'shallow fog': '浅雾',
+                    'partial fog': '部分雾',
+                    'freezing fog': '冻雾',
+                    'patchy rain nearby': '附近零星小雨',
+                    'patchy light drizzle': '零星毛毛雨',
+                    'light drizzle': '毛毛雨',
+                    'drizzle': '毛毛雨',
+                    'patchy light rain': '零星小雨',
+                    'light rain': '小雨',
+                    'moderate rain at times': '间中有中雨',
+                    'moderate rain': '中雨',
+                    'heavy rain at times': '间中有大雨',
+                    'heavy rain': '大雨',
+                    'rain': '雨',
+                    'light freezing rain': '冻小雨',
+                    'moderate or heavy freezing rain': '中到大冻雨',
+                    'patchy light snow': '零星小雪',
+                    'light snow': '小雪',
+                    'patchy moderate snow': '零星中雪',
+                    'moderate snow': '中雪',
+                    'patchy heavy snow': '零星大雪',
+                    'heavy snow': '大雪',
+                    'snow': '雪',
+                    'blizzard': '暴风雪',
+                    'blowing snow': '吹雪',
+                    'patchy sleet nearby': '附近雨夹雪',
+                    'light sleet': '小雨夹雪',
+                    'moderate or heavy sleet': '中到大雨夹雪',
+                    'sleet': '雨夹雪',
+                    'ice pellets': '冰粒',
+                    'hail': '冰雹',
+                    'light rain shower': '小阵雨',
+                    'moderate or heavy rain shower': '中到大阵雨',
+                    'torrential rain shower': '大暴雨',
+                    'light sleet showers': '小阵雨夹雪',
+                    'moderate or heavy sleet showers': '中到大阵雨夹雪',
+                    'light snow showers': '小阵雪',
+                    'moderate or heavy snow showers': '中到大阵雪',
+                    'light showers of ice pellets': '小冰粒阵雨',
+                    'moderate or heavy showers of ice pellets': '中到大冰粒阵雨',
+                    'thunderstorm': '雷暴',
+                    'thunder': '雷',
+                    'patchy light rain in area with thunder': '局部零星小雨伴有雷暴',
+                    'moderate or heavy rain in area with thunder': '中到大雨伴有雷暴',
+                    'patchy light snow in area with thunder': '局部零星小雪伴有雷暴',
+                    'moderate or heavy snow in area with thunder': '中到大雪伴有雷暴',
+                    'thundery outbreaks possible': '可能有雷暴',
+                    'windy': '有风'
+                };
+
+                // ---------- 根据天气类型返回 emoji ----------
+                function getWeatherEmoji(desc) {
+                    const d = desc.toLowerCase();
+                    if (d.includes('sunny') || d.includes('clear')) return '☀️';
+                    if (d.includes('cloudy') || d.includes('overcast')) return '☁️';
+                    if (d.includes('fog') || d.includes('mist')) return '🌫️';
+                    if (d.includes('thunder') || d.includes('storm')) return '⛈️';
+                    if (d.includes('rain') || d.includes('drizzle') || d.includes('shower')) return '🌧️';
+                    if (d.includes('snow') || d.includes('blizzard') || d.includes('sleet') || d.includes('ice') || d.includes(
+                            'hail')) return '❄️';
+                    if (d.includes('windy')) return '💨';
+                    return '🌤️';
+                }
+
+                // ---------- 请求天气 ----------
+                fetch('https://wttr.in/?format=j1')
+                    .then(r => r.ok ? r.json() : Promise.reject())
+                    .then(d => {
+                        const c = d.current_condition[0];
+                        const temp = c.temp_C;
+                        const eng = c.weatherDesc[0].value;
+                        const key = eng.toLowerCase().trim();
+
+                        // 翻译天气
+                        let chn = transMap[key];
+                        if (!chn) {
+                            chn = eng + ' 🌐';
+                            console.warn('[天气] 未找到翻译，请补充:', eng);
+                        }
+
+                        // 处理城市名：优先取中文，若无则查映射表（仅中国地名），否则保留原样
+                        let city = '未知地点';
+                        const area = d.nearest_area[0];
+                        if (area && area.areaName) {
+                            const names = area.areaName;
+                            // 尝试取中文
+                            let zh = names.find(i => i['@xml:lang'] === 'zh');
+                            if (zh && zh.value) {
+                                city = zh.value;
+                            } else {
+                                // 没有中文，取第一个名称（通常是英文）
+                                const raw = names[0]?.value || '';
+                                const keyLower = raw.toLowerCase().trim();
+                                // 仅当在映射表中存在时才翻译，否则保留英文
+                                if (cityTranslationMap[keyLower]) {
+                                    city = cityTranslationMap[keyLower];
+                                } else {
+                                    city = raw || '未知地点';
+                                }
+                            }
+                        }
+
+                        const emoji = getWeatherEmoji(eng);
+
+                        // ----- 新格式：地点、气温、表情+天气描述 -----
+                        wd.innerHTML = `
+                            <span class="weather-line">📍 地点：${city}</span>
+                            <span class="weather-line">🌡️ 气温：${temp}°C</span>
+                            <span class="weather-line">${emoji} ${chn}</span>
+                        `;
+                    })
+                    .catch(() => {
+                        wd.innerHTML = '🌐 天气信息获取失败，请检查网络';
+                    });
+            })();
+
+            // ---------- 进度条动画 ----------
+            window.addEventListener('load', function() {
+                document.querySelectorAll('.progress-bar').forEach(bar => {
+                    const w = bar.style.width;
+                    bar.style.width = '0%';
+                    setTimeout(() => { bar.style.width = w; }, 300);
+                });
+            });
+        </script>
+</body>
+</html>

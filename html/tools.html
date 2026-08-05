@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+    <title>流萤桌宠 · 全屏工具集</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
+    <link rel="icon" href="data:,">
+    <style>
+        /* Toast 通知 */
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 10px 24px;
+            border-radius: 8px;
+            background: #1E1E1E;
+            color: #fff;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            border: 1px solid #4CAF50;
+            pointer-events: auto;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.error { border-color: #f44336; }
+        .toast.info { border-color: #4CAF50; }
+
+        /* 音频列表项 */
+        .music-item {
+            background-color: #3A3A3A;
+            border: 1px solid #555555;
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: background 0.2s;
+            cursor: pointer;
+        }
+        .music-item:hover { background-color: #4A4A4A; }
+        .music-item.active {
+            background-color: #2A5A3A;
+            border-color: #4CAF50;
+        }
+        .music-item .filename {
+            color: #FFFFFF;
+            font-size: 14px;
+            flex: 1;
+        }
+        .music-item .index-badge {
+            color: #888;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+
+        /* 控制按钮 */
+        .ctrl-btn {
+            background: transparent;
+            color: #CCCCCC;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 20px;
+            transition: background 0.2s, color 0.2s;
+        }
+        .ctrl-btn:hover {
+            background: #3A3A3A;
+            color: #FFFFFF;
+        }
+        .ctrl-btn.play-btn {
+            background: #4CAF50;
+            color: white;
+            width: 48px;
+            height: 48px;
+            font-size: 24px;
+        }
+        .ctrl-btn.play-btn:hover {
+            background: #45a049;
+        }
+
+        /* 进度条 */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+            width: 100%;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px;
+            background: #555555;
+            border-radius: 2px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #4CAF50;
+            margin-top: -5px;
+            cursor: pointer;
+        }
+        input[type="range"]::-moz-range-track {
+            height: 4px;
+            background: #555555;
+            border-radius: 2px;
+            border: none;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #4CAF50;
+            border: none;
+            cursor: pointer;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        winBg: '#2D2D2D',
+                        darkBox: '#1E1E1E',
+                        borderLine: '#3A3A3A',
+                        btnGreen: '#4CAF50',
+                        aiCyan: '#00CED1',
+                        textWhite: '#FFFFFF',
+                        textGray: '#888888'
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .glass-dark { backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+            .animate-all { transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1); }
+            .lift-hover { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+            .lift-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0,0,0,0.35); }
+            .scroll-dark::-webkit-scrollbar { width: 12px; }
+            .scroll-dark::-webkit-scrollbar-track { background: #1E1E1E; border-radius: 6px; }
+            .scroll-dark::-webkit-scrollbar-thumb { background: #555555; border-radius: 6px; min-height: 20px; }
+            .scroll-dark::-webkit-scrollbar-thumb:hover { background: #777777; }
+        }
+        html, body {
+            margin: 0; padding: 0;
+            width: 100vw; height: 100vh;
+            overflow: hidden;
+            background-color: #2D2D2D;
+            color: #FFFFFF;
+        }
+        @font-face {
+            font-family: "HarmonyOS Sans SC Medium";
+            src: url("../assets/font/HarmonyOS_Sans_SC_Bold.ttf");
+        }
+        * { font-family: "Microsoft YaHei", "HarmonyOS Sans SC Medium", sans-serif; }
+    </style>
+</head>
+<body class="relative w-full h-full">
+    <div id="toast-container"></div>
+
+    <div class="w-full h-full flex flex-col glass-dark bg-winBg">
+        <!-- 顶部 -->
+        <header class="w-full flex justify-center items-center px-6 py-3 glass-dark border-b border-borderLine animate-all shrink-0">
+            <h1 class="text-xl font-bold text-textWhite tracking-wide">流萤桌宠工具集</h1>
+        </header>
+
+        <div class="flex flex-1 overflow-hidden w-full h-full">
+            <!-- 侧栏 -->
+            <aside class="w-56 h-full bg-darkBox/60 glass-dark flex flex-col py-4 px-2 gap-2 shrink-0">
+                <p class="text-center font-bold text-textGray mb-4">功能导航</p>
+                <button data-target="audio" class="tab-btn animate-all text-left py-3 px-4 rounded-lg font-bold bg-aiCyan text-winBg lift-hover">
+                    <i class="fa fa-music mr-2"></i>音频赏听
+                </button>
+                <button data-target="battery" class="tab-btn animate-all text-left py-3 px-4 rounded-lg font-bold bg-darkBox text-gray-400 lift-hover border border-borderLine">
+                    <i class="fa fa-battery-full mr-2"></i>电池小工具
+                </button>
+                <button data-target="mouse" class="tab-btn animate-all text-left py-3 px-4 rounded-lg font-bold bg-darkBox text-gray-400 lift-hover border border-borderLine">
+                    <i class="fa fa-mouse-pointer mr-2"></i>鼠标指针主题
+                </button>
+                <button data-target="about" class="tab-btn animate-all text-left py-3 px-4 rounded-lg font-bold bg-darkBox text-gray-400 lift-hover border border-borderLine">
+                    <i class="fa fa-info-circle mr-2"></i>关于程序
+                </button>
+                <button data-target="more" class="tab-btn animate-all text-left py-3 px-4 rounded-lg font-bold bg-darkBox text-gray-400 lift-hover border border-borderLine">
+                    <i class="fa fa-github mr-2"></i>更多开源信息
+                </button>
+            </aside>
+
+            <main class="flex-1 w-full h-full p-6 overflow-y-auto scroll-dark">
+                <!-- 音频赏听页 -->
+                <div id="page-audio" class="tab-page w-full h-full flex flex-col gap-5">
+                    <h2 class="text-2xl font-bold text-textWhite border-l-4 border-aiCyan pl-3">音频赏听</h2>
+                    <div class="glass-dark bg-darkBox rounded-xl p-5 flex flex-col flex-1 min-h-[calc(100vh-260px)] border border-borderLine">
+                        <!-- 播放列表 -->
+                        <div id="musicListBox" class="flex-1 min-h-[300px] overflow-y-auto scroll-dark bg-winBg rounded-lg p-4 mb-4">
+                            <div id="musicPlaceholder" class="h-full flex flex-col items-center justify-center text-textGray">
+                                <i class="fa fa-music text-5xl mb-3 text-aiCyan"></i>
+                                <p>正在加载本地音乐库...</p>
+                            </div>
+                        </div>
+
+                        <!-- 播放控制栏 -->
+                        <div class="flex flex-col gap-3 shrink-0">
+                            <!-- 当前播放信息 -->
+                            <div id="nowPlaying" class="text-textGray text-sm text-center h-6">未播放</div>
+                            <!-- 进度条 -->
+                            <div class="flex items-center gap-3">
+                                <span id="currentTime" class="text-textGray text-xs w-12 text-right">0:00</span>
+                                <input id="progressSlider" type="range" min="0" max="1000" value="0" class="flex-1" />
+                                <span id="totalTime" class="text-textGray text-xs w-12">0:00</span>
+                            </div>
+                            <!-- 按钮组 -->
+                            <div class="flex items-center justify-center gap-4">
+                                <button id="prevBtn" class="ctrl-btn" title="上一首"><i class="fa fa-step-backward"></i></button>
+                                <button id="playPauseBtn" class="ctrl-btn play-btn" title="播放/暂停"><i class="fa fa-play"></i></button>
+                                <button id="nextBtn" class="ctrl-btn" title="下一首"><i class="fa fa-step-forward"></i></button>
+                                <!-- 音量 -->
+                                <div class="flex items-center gap-2 ml-4">
+                                    <i class="fa fa-volume-up text-textGray"></i>
+                                    <input id="volumeSlider" type="range" min="0" max="1" step="0.05" value="0.5" class="w-24 accent-aiCyan" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 电池检测页 -->
+                <div id="page-battery" class="tab-page hidden w-full h-full flex flex-col gap-5">
+                    <h2 class="text-2xl font-bold text-textWhite border-l-4 border-aiCyan pl-3">电池状态检测工具</h2>
+                    <div class="glass-dark bg-darkBox rounded-xl p-8 shadow-lg flex flex-col items-center justify-center gap-6 flex-1 min-h-[calc(100vh-260px)] border border-borderLine">
+                        <div class="w-[220px] h-[220px] rounded-2xl bg-winBg flex items-center justify-center shadow-inner border border-borderLine">
+                            <img src="../assets/images/icon/battery.png" class="w-full h-full object-contain p-2" alt="电池图标">
+                        </div>
+                        <p class="font-bold text-lg text-textWhite">点击按钮读取电量并播放语音</p>
+                        <button id="detectBatteryBtn" class="px-8 py-3 rounded-lg bg-btnGreen text-textWhite font-bold text-lg lift-hover shadow-md shrink-0">
+                            <i class="fa fa-bolt mr-2"></i>检测电池状态
+                        </button>
+                        <div id="batteryTipText" class="font-bold text-textWhite text-lg h-8 shrink-0"></div>
+                    </div>
+                </div>
+
+                <!-- 鼠标指针页 -->
+                <div id="page-mouse" class="tab-page hidden w-full h-full flex flex-col gap-5">
+                    <h2 class="text-2xl font-bold text-textWhite border-l-4 border-aiCyan pl-3">鼠标指针主题安装</h2>
+                    <div class="glass-dark bg-darkBox rounded-xl p-6 shadow-lg flex flex-col gap-5 flex-1 min-h-[calc(100vh-260px)] border border-borderLine">
+                        <p class="font-bold text-textWhite text-lg">选择主题并安装</p>
+                        <label class="flex items-center gap-3 p-4 rounded-lg bg-winBg lift-hover cursor-pointer border border-borderLine shrink-0">
+                            <input type="radio" name="cursorTheme" value="Firefly" class="w-5 h-5 accent-aiCyan">
+                            <span class="text-lg text-textWhite">流萤指针｜./mouse/Firefly</span>
+                        </label>
+                        <label class="flex items-center gap-3 p-4 rounded-lg bg-winBg lift-hover cursor-pointer border border-borderLine shrink-0">
+                            <input type="radio" name="cursorTheme" value="Sam" class="w-5 h-5 accent-aiCyan">
+                            <span class="text-lg text-textWhite">萨姆指针｜./mouse/Sam</span>
+                        </label>
+                        <button id="installThemeBtn" class="w-fit px-6 py-3 rounded-lg bg-btnGreen text-textWhite font-bold lift-hover shrink-0">
+                            <i class="fa fa-download mr-2"></i>安装
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 关于程序页 -->
+                <div id="page-about" class="tab-page hidden w-full h-full flex flex-col gap-5">
+                    <h2 class="text-2xl font-bold text-textWhite border-l-4 border-aiCyan pl-3">关于流萤桌宠程序</h2>
+                    <div class="glass-dark bg-darkBox rounded-xl p-8 shadow-lg flex flex-col items-center justify-center gap-6 flex-1 min-h-[calc(100vh-260px)] border border-borderLine">
+                        <div class="w-[220px] h-[220px] rounded-2xl bg-winBg flex items-center justify-center border border-borderLine">
+                            <img src="../assets/images/firefly/icon/icon.png" class="w-full h-full object-contain p-2" alt="程序图标">
+                        </div>
+                        <p class="font-bold text-xl text-textWhite shrink-0">桌宠版本：V4.3.1 正式版</p>
+                    </div>
+                </div>
+
+                <!-- 更多信息页 -->
+                <div id="page-more" class="tab-page hidden w-full h-full flex flex-col gap-5">
+                    <h2 class="text-2xl font-bold text-textWhite border-l-4 border-aiCyan pl-3">开源项目与创作信息</h2>
+                    <div class="glass-dark bg-darkBox rounded-xl p-6 shadow-lg flex flex-col items-center gap-5 border border-borderLine flex-1 min-h-[calc(100vh-260px)]">
+                        <div class="w-[220px] h-[220px] rounded-2xl bg-winBg flex items-center justify-center border border-borderLine shrink-0">
+                            <img src="../assets/images/firefly/Lovely/peeping2.png" class="w-full h-full object-contain p-2" alt="peeping">
+                        </div>
+                        <div class="text-center font-bold text-textWhite whitespace-pre-wrap text-base leading-relaxed shrink-0">
+原作者项目地址:https://github.com/ChaozhongLiu/DyberPet
+项目地址：https://github.com/Jimhow-Gu/Firefly-Table-Pet-Online/releases
+时装二次创作:白咻
+本程序由Gubwin二次创作，开源开放。
+                        </div>
+                        <div class="w-full max-w-[450px] h-[400px] rounded-2xl bg-winBg flex items-center justify-center border border-borderLine shrink-0 mt-3">
+                            <img src="../assets/images/work.png" class="w-full h-full object-contain p-2" alt="work">
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer class="w-full py-2 px-6 bg-darkBox/50 glass-dark border-t border-borderLine text-sm text-textGray flex justify-end shrink-0">
+            <span id="volumeStatus">音频音量：0.5</span>
+        </footer>
+    </div>
+
+    <audio id="audioCore"></audio>
+
+    <div id="maskModal" class="fixed inset-0 bg-black/70 hidden z-50 flex items-center justify-center">
+        <div class="w-[400px] bg-winBg border border-borderLine rounded-xl p-6 flex flex-col gap-4">
+            <p id="modalText" class="text-textWhite text-center"></p>
+            <div id="modalBtnWrap" class="flex justify-center gap-4"></div>
+        </div>
+    </div>
+
+    <script>
+        // ========== Toast ==========
+        function showToast(message, type = 'info', duration = 3000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+            requestAnimationFrame(() => toast.classList.add('show'));
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => { if (toast.parentNode) toast.remove(); }, 300);
+            }, duration);
+        }
+
+        // ===================== 核心逻辑 =====================
+
+        // 1. Tab切换
+        const tabButtons = document.querySelectorAll('.tab-btn');
+        const tabPages = document.querySelectorAll('.tab-page');
+        tabButtons.forEach((btn, idx) => {
+            if (idx === 0) {
+                btn.classList.remove('bg-darkBox', 'text-gray-400');
+                btn.classList.add('bg-aiCyan', 'text-winBg');
+            }
+            btn.addEventListener('click', () => {
+                const target = btn.dataset.target;
+                tabButtons.forEach(b => {
+                    b.classList.remove('bg-aiCyan', 'text-winBg');
+                    b.classList.add('bg-darkBox', 'text-gray-400');
+                });
+                btn.classList.remove('bg-darkBox', 'text-gray-400');
+                btn.classList.add('bg-aiCyan', 'text-winBg');
+                tabPages.forEach(p => p.classList.add('hidden'));
+                document.getElementById(`page-${target}`).classList.remove('hidden');
+            });
+        });
+
+        // 2. 音频控制
+        const audio = document.getElementById('audioCore');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const progressSlider = document.getElementById('progressSlider');
+        const currentTimeSpan = document.getElementById('currentTime');
+        const totalTimeSpan = document.getElementById('totalTime');
+        const nowPlayingDiv = document.getElementById('nowPlaying');
+        const volumeSlider = document.getElementById('volumeSlider');
+        const volumeStatus = document.getElementById('volumeStatus');
+
+        let playlist = [];
+        let currentIndex = -1;      // -1 表示无播放
+        let isSeeking = false;
+
+        // 格式化时间
+        function formatTime(seconds) {
+            if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        // 更新播放器界面
+        function updatePlayerUI() {
+            if (currentIndex >= 0 && currentIndex < playlist.length) {
+                nowPlayingDiv.textContent = `🎵 ${playlist[currentIndex]}`;
+            } else {
+                nowPlayingDiv.textContent = '未播放';
+            }
+        }
+
+        // 加载歌曲（不自动播放，只加载并准备）
+        function loadSong(index, autoPlay = true) {
+            if (index < 0 || index >= playlist.length) {
+                // 无效索引，停止播放
+                audio.pause();
+                audio.src = '';
+                currentIndex = -1;
+                playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+                progressSlider.value = 0;
+                currentTimeSpan.textContent = '0:00';
+                totalTimeSpan.textContent = '0:00';
+                updatePlayerUI();
+                highlightListItem(-1);
+                return;
+            }
+            currentIndex = index;
+            const file = playlist[index];
+            audio.src = `/music/${encodeURIComponent(file)}`;
+            audio.load();
+            if (autoPlay) {
+                audio.play().catch(() => {});
+                playPauseBtn.innerHTML = '<i class="fa fa-pause"></i>';
+            } else {
+                // 仅加载，不播放
+                playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+            }
+            updatePlayerUI();
+            highlightListItem(index);
+        }
+
+        // 高亮当前播放项（传入 -1 清除高亮）
+        function highlightListItem(index) {
+            const items = document.querySelectorAll('.music-item');
+            items.forEach((item, i) => {
+                if (i === index) item.classList.add('active');
+                else item.classList.remove('active');
+            });
+        }
+
+        // 播放/暂停切换
+        function togglePlay() {
+            if (currentIndex === -1) {
+                // 没有选中歌曲，自动播放第一首（如果有）
+                if (playlist.length > 0) {
+                    loadSong(0, true);
+                }
+                return;
+            }
+            if (audio.paused) {
+                audio.play();
+                playPauseBtn.innerHTML = '<i class="fa fa-pause"></i>';
+            } else {
+                audio.pause();
+                playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+            }
+        }
+
+        // 上一首
+        function prevSong() {
+            if (playlist.length === 0) return;
+            let idx = currentIndex - 1;
+            if (idx < 0) idx = playlist.length - 1;
+            loadSong(idx, true);
+        }
+
+        // 下一首
+        function nextSong() {
+            if (playlist.length === 0) return;
+            let idx = currentIndex + 1;
+            if (idx >= playlist.length) idx = 0;
+            loadSong(idx, true);
+        }
+
+        // 音频事件绑定
+        audio.addEventListener('loadedmetadata', () => {
+            totalTimeSpan.textContent = formatTime(audio.duration);
+            progressSlider.max = Math.floor(audio.duration * 1000);
+        });
+
+        audio.addEventListener('timeupdate', () => {
+            if (!isSeeking && audio.duration) {
+                const progress = (audio.currentTime / audio.duration) * 1000;
+                progressSlider.value = progress;
+                currentTimeSpan.textContent = formatTime(audio.currentTime);
+            }
+        });
+
+        audio.addEventListener('ended', () => {
+            // 播放结束：停止，不自动下一首
+            audio.currentTime = 0;
+            progressSlider.value = 0;
+            currentTimeSpan.textContent = '0:00';
+            playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+            // 保持 currentIndex 不变，以便用户再次播放同一首
+        });
+
+        // 进度条拖动
+        progressSlider.addEventListener('input', () => {
+            isSeeking = true;
+            if (audio.duration) {
+                const pos = progressSlider.value / 1000;
+                audio.currentTime = pos * audio.duration;
+                currentTimeSpan.textContent = formatTime(audio.currentTime);
+            }
+        });
+        progressSlider.addEventListener('change', () => {
+            isSeeking = false;
+        });
+
+        // 音量控制
+        volumeSlider.addEventListener('input', () => {
+            audio.volume = volumeSlider.value;
+            volumeStatus.textContent = `音频音量：${volumeSlider.value}`;
+        });
+
+        // 按钮事件
+        playPauseBtn.addEventListener('click', togglePlay);
+        prevBtn.addEventListener('click', prevSong);
+        nextBtn.addEventListener('click', nextSong);
+
+        // ============= 加载音乐列表 =============
+        function loadMusicList() {
+            fetch('/api/music')
+                .then(res => res.json())
+                .then(files => {
+                    if (!files || files.length === 0) {
+                        document.getElementById('musicPlaceholder').innerHTML = `
+                            <i class="fa fa-music text-5xl mb-3 text-aiCyan"></i>
+                            <p>music 目录下没有音频文件</p>
+                        `;
+                        return;
+                    }
+                    playlist = files;
+                    const container = document.getElementById('musicListBox');
+                    container.innerHTML = '';
+                    files.forEach((file, index) => {
+                        const div = document.createElement('div');
+                        div.className = 'music-item';
+                        div.innerHTML = `
+                            <span class="index-badge">${index + 1}</span>
+                            <span class="filename">${file}</span>
+                        `;
+                        div.addEventListener('click', () => {
+                            // 点击即播放
+                            loadSong(index, true);
+                        });
+                        container.appendChild(div);
+                    });
+                    // 重置状态：不自动播放
+                    currentIndex = -1;
+                    playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+                    progressSlider.value = 0;
+                    currentTimeSpan.textContent = '0:00';
+                    totalTimeSpan.textContent = '0:00';
+                    nowPlayingDiv.textContent = '未播放';
+                    highlightListItem(-1);
+                    audio.src = '';
+                })
+                .catch(err => {
+                    console.error('加载失败:', err);
+                    document.getElementById('musicPlaceholder').innerHTML = `
+                        <i class="fa fa-music text-5xl mb-3 text-aiCyan"></i>
+                        <p>加载失败，请检查网络</p>
+                    `;
+                });
+        }
+
+        // ============= 电池检测 =============
+        document.getElementById('detectBatteryBtn').onclick = async () => {
+            const tipDom = document.getElementById('batteryTipText');
+            try {
+                const battery = await navigator.getBattery();
+                const level = Math.round(battery.level * 100);
+                const isCharging = battery.charging;
+                let filename = "";
+                if (isCharging) filename = "电源适配器已经连接.wav";
+                else if (level === 100) filename = "电量已经满了.wav";
+                else if (level > 20) filename = "现在的电量保持的不错.wav";
+                else filename = "当前的电量过低.wav";
+                // 临时播放（不干扰播放列表状态）
+                const oldSrc = audio.src;
+                const oldIndex = currentIndex;
+                audio.src = `/music/${encodeURIComponent(filename)}`;
+                audio.volume = parseFloat(volumeSlider.value);
+                audio.play().catch(e => console.warn('播放失败:', e));
+                tipDom.innerText = `当前电量：${level}% ${isCharging ? "｜正在充电" : "｜未充电"}`;
+                // 5秒后恢复原歌曲（如果有）
+                setTimeout(() => {
+                    if (oldIndex >= 0 && oldIndex < playlist.length) {
+                        audio.src = `/music/${encodeURIComponent(playlist[oldIndex])}`;
+                        audio.load();
+                        if (!audio.paused) audio.play();
+                        // 但电池检测时可能改变了播放状态，我们恢复播放状态（如果之前是播放的）
+                    } else {
+                        audio.src = '';
+                        currentIndex = -1;
+                        playPauseBtn.innerHTML = '<i class="fa fa-play"></i>';
+                        nowPlayingDiv.textContent = '未播放';
+                        progressSlider.value = 0;
+                        currentTimeSpan.textContent = '0:00';
+                        totalTimeSpan.textContent = '0:00';
+                        highlightListItem(-1);
+                    }
+                }, 5000);
+            } catch (err) {
+                tipDom.innerText = "设备无电池/浏览器不支持电池API";
+            }
+        };
+
+        // ============= 鼠标指针安装 =============
+        let selectedTheme = "";
+        document.querySelectorAll('input[name="cursorTheme"]').forEach(r => {
+            r.addEventListener('change', () => { selectedTheme = r.value; });
+        });
+        document.getElementById('installThemeBtn').onclick = async () => {
+            if (!selectedTheme) {
+                showToast('请先选择一个指针主题！', 'error');
+                return;
+            }
+            try {
+                const folderPath = selectedTheme === "Firefly" ? "./mouse/Firefly" : "./mouse/Sam";
+                const res = await fetch(`/install_theme?path=${encodeURIComponent(folderPath)}`);
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    showToast('安装已启动，请稍后查看鼠标指针变化。', 'info');
+                } else {
+                    showToast('安装失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (err) {
+                showToast('请求失败: ' + err, 'error');
+            }
+        };
+
+        // 初始化
+        window.onload = function() {
+            loadMusicList();
+            audio.volume = parseFloat(volumeSlider.value);
+            volumeStatus.textContent = `音频音量：${volumeSlider.value}`;
+        };
+    </script>
+</body>
+</html>

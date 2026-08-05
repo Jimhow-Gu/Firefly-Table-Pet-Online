@@ -1,0 +1,87 @@
+{
+  "uid": "Trailblazer-520131499",
+  "username": "流萤",
+  "userid": "Firefly",
+  "password": "123456",
+  "birthday": "2008-05-15",
+  "register_time": "2026-05-15 19:03:34",
+  "balance": 1006,
+  "credit": 36000,
+  "last_sign_date": "2026-08-05T19:30:26.623424",
+  "banned": false,
+  "banned_until": null,
+  "redeemed_codes": [
+    "cake"
+  ],
+  "redeem_history": [
+    "2026-05-16 01:50:04 - 签到获得 36000 信用点",
+    "2026-05-18 22:03:13 - 使用兑换码 cake",
+    "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x9",
+    "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x999",
+    "2026-08-05 19:30:26 - 签到获得 36000 信用点"
+  ],
+  "cursor_style": "None",
+  "pet_size": "small",
+  "owned_clothes": [
+    "normal"
+  ],
+  "mailbox": [
+    {
+      "id": "678e4d84-8f33-4d7f-a83f-1facac0384f6",
+      "title": "管理员赠送物品",
+      "content": "管理员 admin 赠送了 橡木蛋糕卷。",
+      "sender": "系统",
+      "timestamp": "2026-05-18T10:48:16.266033",
+      "read": false,
+      "claimed": true,
+      "items": [
+        {
+          "type": "cake",
+          "amount": 9
+        }
+      ]
+    },
+    {
+      "id": "0237c1fb-282c-4562-9523-7347a9138702",
+      "title": "兑换码奖励",
+      "content": "成功使用兑换码 cake，获得以下物品。",
+      "sender": "系统",
+      "timestamp": "2026-05-18T22:03:13.196267",
+      "read": true,
+      "claimed": true,
+      "items": [
+        {
+          "type": "cake",
+          "amount": 999
+        }
+      ]
+    }
+  ],
+  "last_state": "Discomfort",
+  "last_x": 1629,
+  "last_y": 368,
+  "star_rail_tickets": 0,
+  "last_birthday_greet_year": null,
+  "last_feed_time": 1785842597.8488438,
+  "volume": 0.5,
+  "allow_move": false,
+  "total_interactions": 3,
+  "total_open_count": 91,
+  "total_sign_days": 2,
+  "total_affection_up": 1,
+  "total_sleep_count": 0,
+  "total_chat_count": 0,
+  "monthly_interactions": 3,
+  "monthly_open_count": 98,
+  "monthly_sign_days": 2,
+  "monthly_affection_up": 1,
+  "monthly_sleep_count": 0,
+  "monthly_chat_count": 0,
+  "monthly_credit_gained": 43200,
+  "monthly_cake_gained": 0,
+  "monthly_ai_click_count": 0,
+  "current_month": "2026-08",
+  "current_clothes": "normal",
+  "last_change_name_month": null,
+  "change_name_count": 0
+}
