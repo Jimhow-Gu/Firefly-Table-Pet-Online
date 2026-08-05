@@ -126,5 +126,31 @@
     "revoked_users": [],
     "revoked_by": null,
     "revoked_time": null
+  },
+  "9999": {
+    "max_uses": 0,
+    "used_count": 1,
+    "created_by": "\u8424\u706b\u866b",
+    "created_time": "2026-08-30 14:30:09",
+    "target_user": null,
+    "items": [
+      {
+        "type": "cake",
+        "amount": 5
+      },
+      {
+        "type": "credit",
+        "amount": 1000
+      },
+      {
+        "type": "clothes",
+        "id": "26_Newyear"
+      }
+    ],
+    "expire_time": null,
+    "revoked": false,
+    "revoked_users": [],
+    "revoked_by": null,
+    "revoked_time": null
   }
 }

@@ -395,12 +395,12 @@
             </h2>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div class="glass-card p-5 text-center">
-                    <div class="text-3xl font-bold text-cyan-200">{{ monthly_interactions }}</div>
-                    <div class="text-gray-400 text-sm mt-1">本月互动次数</div>
+                    <div class="text-3xl font-bold text-cyan-200">{{ monthly_jade_gained }}</div>
+                    <div class="text-gray-400 text-sm mt-1">本月获取星琼</div>
                 </div>
                 <div class="glass-card p-5 text-center">
-                    <div class="text-3xl font-bold text-purple-400">{{ monthly_open_count }}</div>
-                    <div class="text-gray-400 text-sm mt-1">{{ open_label }}</div>
+                    <div class="text-3xl font-bold text-purple-400">{{ monthly_ticket_gained }}</div>
+                    <div class="text-gray-400 text-sm mt-1">本月获取专票<br><span class="text-xs text-cyan-200/50">（不含兑换码）</span></div>
                 </div>
                 <div class="glass-card p-5 text-center">
                     <div class="text-3xl font-bold text-cyan-200">{{ monthly_sign_days }}</div>
@@ -455,9 +455,9 @@
                             <div class="text-gray-400 text-sm mt-1">桌宠睡觉次数</div>
                         </div>
                         <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-cyan-500/5 transition-all">
-                            <div class="data-icon-box bg-cyan-500/10 text-cyan-300 mx-auto">🖱️</div>
-                            <div class="text-2xl font-bold text-cyan-200">{{ monthly_open_count }}</div>
-                            <div class="text-gray-400 text-sm mt-1">{{ open_label }}</div>
+                            <div class="data-icon-box bg-cyan-500/10 text-cyan-300 mx-auto">💎</div>
+                            <div class="text-2xl font-bold text-cyan-200">{{ monthly_jade_gained }}</div>
+                            <div class="text-gray-400 text-sm mt-1">星琼获取数量</div>
                         </div>
                         <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-purple-500/5 transition-all">
                             <div class="data-icon-box bg-purple-500/10 text-purple-300 mx-auto">🤝</div>
@@ -470,9 +470,9 @@
                             <div class="text-gray-400 text-sm mt-1">签到次数</div>
                         </div>
                         <div class="text-center p-4 rounded-xl bg-white/5 hover:bg-orange-500/5 transition-all">
-                            <div class="data-icon-box bg-orange-500/10 text-orange-300 mx-auto">💬</div>
-                            <div class="text-2xl font-bold text-orange-200">{{ monthly_chat_count }}</div>
-                            <div class="text-gray-400 text-sm mt-1">{{ chat_label }}</div>
+                            <div class="data-icon-box bg-orange-500/10 text-orange-300 mx-auto">🎟️</div>
+                            <div class="text-2xl font-bold text-orange-200">{{ monthly_ticket_gained }}</div>
+                            <div class="text-gray-400 text-sm mt-1">专票获取数量<br><span class="text-xs text-cyan-200/50">（不含兑换码）</span></div>
                         </div>
                     </div>
                 </div>
@@ -505,11 +505,11 @@
                         </div>
                         <div>
                             <div class="progress-label">
-                                <span class="label">互动目标</span>
-                                <span class="value">{{ interact_display }}</span>
+                                <span class="label">星琼获取数</span>
+                                <span class="value">{{ jade_display }}</span>
                             </div>
                             <div class="progress-bg">
-                                <div class="progress-bar" style="width: {{ interact_percent }}%"></div>
+                                <div class="progress-bar" style="width: {{ jade_percent }}%"></div>
                             </div>
                         </div>
                         <div>
