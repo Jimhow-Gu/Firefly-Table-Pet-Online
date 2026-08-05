@@ -42,7 +42,7 @@ MOD_CONTROL = 0x0002
 MOD_NOREPEAT = 0x4000
 VK_TAB = 0x09
 
-CLIENT_VERSION = "4.4.1-beta"
+CLIENT_VERSION = "4.4.1"
 
 def parse_version(ver_str):
     """同服务端定义"""
@@ -8572,11 +8572,11 @@ if __name__ == "__main__":
 
 
         def on_login_success(user_data):
-            # 清理旧实例
+            login_win.accept()  # 关闭对话框
+            # 清理旧实例（如果有）
             if hasattr(app, 'firefly') and app.firefly:
                 app.firefly.deleteLater()
                 app.firefly = None
-                QApplication.processEvents()
             app.firefly = Firefly(user_data=user_data)
             app.firefly.init_tray_icon()
             app.firefly.create_menu()
@@ -8585,6 +8585,11 @@ if __name__ == "__main__":
 
 
         login_win.login_success.connect(on_login_success)
-        login_win.open()
+
+        # 模态显示，等待用户操作
+        if login_win.exec_() != QDialog.Accepted:
+            # 用户取消或直接关闭窗口
+            app.quit()
+            sys.exit(0)
 
     sys.exit(app.exec_())
