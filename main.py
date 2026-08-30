@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 import traceback
+import weakref
+
 import psutil
 import pygame
 import webbrowser
@@ -14,25 +16,283 @@ import random
 import uuid
 import urllib.request
 from datetime import datetime, timedelta, timezone
+
+from PyQt5 import sip
 from PyQt5.QtGui import *
 from PyQt5.QtCore import *
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtWidgets import *
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineProfile, QWebEngineSettings
 from lunardate import LunarDate
 from PyQt5.QtCore import QAbstractNativeEventFilter, QTimer
 import ctypes
 from ctypes import wintypes
-
+import urllib.error
 from win10toast import ToastNotifier
 
+os.environ["QTWEBENGINE_DISABLE_SHADER_DISK_CACHE"] = "1"
+
 def global_exception_hook(exc_type, exc_value, exc_tb):
+    # 记录日志
     msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    with open("firefly_crash.log", "a", encoding="utf-8") as f:
+    log_path = "firefly_crash.log"
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"\n=== {datetime.now()} ===\n")
         f.write(msg)
     print("严重错误已记录到 firefly_crash.log")
+
+    app = QApplication.instance()
+    if app:
+        # ---------- 1. 查找 Firefly 主窗口并保存/隐藏 ----------
+        firefly = None
+        if hasattr(app, 'firefly') and app.firefly:
+            firefly = app.firefly
+        else:
+            for widget in app.topLevelWidgets():
+                if isinstance(widget, Firefly):
+                    firefly = widget
+                    break
+        if firefly:
+            try:
+                # 保存当前用户数据
+                if hasattr(firefly, 'current_user') and firefly.current_user:
+                    firefly.current_user["last_state"] = firefly.persistent_state if hasattr(firefly, 'persistent_state') else "Standby"
+                    pos = firefly.pos()
+                    firefly.current_user["last_x"] = pos.x()
+                    firefly.current_user["last_y"] = pos.y()
+                    if hasattr(firefly, '_save_current_user'):
+                        firefly._save_current_user()
+                # 隐藏主窗口
+                firefly.hide()
+                # 隐藏托盘图标
+                if hasattr(firefly, 'tray_icon') and firefly.tray_icon:
+                    firefly.tray_icon.setVisible(False)
+            except Exception as e:
+                print(f"保存状态或隐藏窗口失败: {e}")
+
+        # ---------- 2. 创建崩溃对话框（原代码） ----------
+        dialog = QDialog()
+        dialog.setWindowTitle("严重错误")
+        dialog.setFixedSize(520, 220)
+        dialog.setWindowFlags(
+            Qt.Dialog |
+            Qt.WindowCloseButtonHint |
+            Qt.WindowStaysOnTopHint
+        )
+
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(base_dir, "assets", "images", "firefly", "Sadness", "abandoned.ico")
+        if os.path.exists(icon_path):
+            dialog.setWindowIcon(QIcon(icon_path))
+        else:
+            dialog.setWindowIcon(QIcon())
+
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #1E1E1E;
+                border-radius: 10px;
+                border: 1px solid #444;
+            }
+            QLabel {
+                color: #CCCCCC;
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton#open_log_btn {
+                background-color: #FF9800;
+            }
+            QPushButton#open_log_btn:hover {
+                background-color: #F57C00;
+            }
+        """)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        title_layout = QHBoxLayout()
+        icon_label = QLabel()
+        if os.path.exists(icon_path):
+            pixmap = QPixmap(icon_path)
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                icon_label.setPixmap(pixmap)
+            else:
+                icon_label.setText("⚠️")
+                icon_label.setStyleSheet("font-size: 24px;")
+        else:
+            icon_label.setText("⚠️")
+            icon_label.setStyleSheet("font-size: 24px;")
+        title_layout.addWidget(icon_label, alignment=Qt.AlignCenter)
+
+        title_label = QLabel("流萤桌宠发生了严重的崩溃！")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #FF5555;")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_layout.addWidget(title_label)
+        layout.addLayout(title_layout)
+
+        info_label = QLabel("如果要请求别人帮助，请提供完整日志而不是此截图。")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(info_label)
+
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(dialog.accept)
+        open_log_btn = QPushButton("打开日志")
+        open_log_btn.setObjectName("open_log_btn")
+        open_log_btn.clicked.connect(
+            lambda: os.startfile(log_path) if os.path.exists(log_path) else None
+        )
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(open_log_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.setModal(True)
+        screen = QApplication.primaryScreen().availableGeometry()
+        dialog.move(screen.center() - dialog.rect().center())
+        dialog.raise_()
+        dialog.activateWindow()
+        # 阻塞等待用户交互
+        dialog.exec_()
+
+    # 调用原始钩子（确保异常信息输出）并强制退出
     sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.exit(1)
+
+def show_resource_missing_and_exit(missing_items):
+    """显示资源缺失/损坏弹窗并退出程序"""
+    app = QApplication.instance()
+    if app:
+        msg_box = QMessageBox()
+        msg_box.setWindowTitle("资源错误")
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setText("程序资源损坏或缺失，无法继续运行！")
+        msg_box.setInformativeText("问题资源：\n" + "\n".join(missing_items))
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #CCCCCC;
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+        """)
+        screen_center = QApplication.primaryScreen().availableGeometry().center()
+        msg_box.move(screen_center - msg_box.rect().center())
+        msg_box.exec_()
+    sys.exit(1)
+
+def check_essential_resources():
+    """检查核心资源是否存在且有效（避免空文件或损坏文件）"""
+    missing = []
+    invalid = []
+
+    # 检查必要的目录
+    required_dirs = [
+        "assets",
+        "assets/images/firefly/actions/Standby",
+        "assets/images/firefly/actions/Discomfort",
+        "assets/font",
+        "assets/images/icon",
+        "assets/images/foods",
+        "mouse/Firefly",
+        "mouse/Sam",
+    ]
+    for d in required_dirs:
+        if not os.path.exists(d):
+            missing.append(f"目录缺失: {d}")
+        elif not os.path.isdir(d):
+            invalid.append(f"路径不是目录: {d}")
+
+    # 检查关键文件（存在性、大小、有效性）
+    required_files = [
+        ("assets/font/HarmonyOS_Sans_SC_Bold.ttf", "字体文件", None),
+        ("assets/images/icon/Login_img.png", "登录图片", "image"),
+        ("assets/images/star_rail_ticket.png", "星铁专票图片", "image"),
+        ("assets/images/firefly/Sadness/abandoned.ico", "图标文件", "image"),
+        ("assets/images/foods/Cake.png", "蛋糕图片", "image"),
+    ]
+
+    for filepath, desc, file_type in required_files:
+        if not os.path.exists(filepath):
+            missing.append(f"文件缺失: {desc} ({filepath})")
+            continue
+        # 检查文件大小
+        size = os.path.getsize(filepath)
+        if size == 0:
+            invalid.append(f"文件为空: {desc} ({filepath})")
+            continue
+        # 对于图片文件，尝试用 QPixmap 加载，验证有效性
+        if file_type == "image":
+            try:
+                pixmap = QPixmap(filepath)
+                if pixmap.isNull():
+                    invalid.append(f"图片无法加载(损坏): {desc} ({filepath})")
+            except Exception:
+                invalid.append(f"图片加载异常: {desc} ({filepath})")
+
+    # 检查动画 GIF 文件（至少一个有效）
+    action_dirs = [
+        ("assets/images/firefly/actions/Standby", "Standby动画"),
+        ("assets/images/firefly/actions/Discomfort", "Discomfort动画"),
+    ]
+    for ad, name in action_dirs:
+        if os.path.exists(ad):
+            gif_files = [f for f in os.listdir(ad) if f.lower().endswith('.gif')]
+            if not gif_files:
+                invalid.append(f"{name}目录下没有GIF文件")
+            else:
+                # 尝试加载至少一个 GIF
+                valid_gif = False
+                for gf in gif_files:
+                    gif_path = os.path.join(ad, gf)
+                    try:
+                        movie = QMovie(gif_path)
+                        if movie.frameCount() > 0:
+                            valid_gif = True
+                            break
+                    except:
+                        pass
+                if not valid_gif:
+                    invalid.append(f"{name}目录下的GIF文件均无效或损坏")
+
+    if missing or invalid:
+        all_issues = []
+        if missing:
+            all_issues.append("缺失项:")
+            all_issues.extend(missing)
+        if invalid:
+            all_issues.append("\n损坏/无效项:")
+            all_issues.extend(invalid)
+        show_resource_missing_and_exit(all_issues)
 
 sys.excepthook = global_exception_hook
 
@@ -42,7 +302,7 @@ MOD_CONTROL = 0x0002
 MOD_NOREPEAT = 0x4000
 VK_TAB = 0x09
 
-CLIENT_VERSION = "4.4.1-beta"
+CLIENT_VERSION = "4.5.1"
 
 def parse_version(ver_str):
     """同服务端定义"""
@@ -176,11 +436,254 @@ MENU_STYLE = """
         margin: 4px 0px;
     }
 """
+def safe_load_json_with_recovery(filepath, default_data=None):
+    """
+    安全加载 JSON 文件。如果文件损坏，尝试从内容中恢复关键字段。
+    若恢复失败，则使用默认数据创建并写入文件。
+    返回解析后的数据字典。
+    """
+    if not os.path.exists(filepath):
+        return None
+
+    # 尝试多种编码读取
+    encodings = ['utf-8-sig', 'utf-8', 'gbk', 'latin-1']
+    raw_content = None
+    for enc in encodings:
+        try:
+            with open(filepath, 'r', encoding=enc) as f:
+                raw_content = f.read()
+            break
+        except:
+            continue
+    if raw_content is None:
+        # 读取失败，备份并返回默认数据
+        backup_path = filepath + '.corrupted'
+        try:
+            shutil.copy2(filepath, backup_path)
+        except:
+            pass
+        return _create_default_user_data(filepath)
+
+    # 1. 尝试正常 JSON 解析
+    try:
+        data = json.loads(raw_content)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2. 如果解析失败，尝试恢复数据
+    backup_path = filepath + '.corrupted'
+    try:
+        shutil.copy2(filepath, backup_path)
+        print(f"[修复] 损坏文件已备份至 {backup_path}")
+    except Exception:
+        pass
+
+    # 用正则提取常见字段（包括 password）
+    recovered = {}
+    string_patterns = {
+        'uid': r'"uid":\s*"([^"]*)"',
+        'username': r'"username":\s*"([^"]*)"',
+        'userid': r'"userid":\s*"([^"]*)"',
+        'password': r'"password":\s*"([^"]*)"',   # ← 关键新增
+        'birthday': r'"birthday":\s*"([^"]*)"',
+        'register_time': r'"register_time":\s*"([^"]*)"',
+        'last_sign_date': r'"last_sign_date":\s*"([^"]*)"',
+        'banned_until': r'"banned_until":\s*"([^"]*)"',
+        'current_clothes': r'"current_clothes":\s*"([^"]*)"',
+        'last_state': r'"last_state":\s*"([^"]*)"',
+        'current_month': r'"current_month":\s*"([^"]*)"',
+    }
+    for key, pattern in string_patterns.items():
+        match = re.search(pattern, raw_content)
+        if match:
+            recovered[key] = match.group(1)
+
+    int_patterns = {
+        'balance': r'"balance":\s*(\d+)',
+        'credit': r'"credit":\s*(\d+)',
+        'jade': r'"jade":\s*(\d+)',
+        'star_rail_tickets': r'"star_rail_tickets":\s*(\d+)',
+        'total_interactions': r'"total_interactions":\s*(\d+)',
+        'total_open_count': r'"total_open_count":\s*(\d+)',
+        'total_sign_days': r'"total_sign_days":\s*(\d+)',
+        'monthly_credit_gained': r'"monthly_credit_gained":\s*(\d+)',
+        'monthly_cake_gained': r'"monthly_cake_gained":\s*(\d+)',
+    }
+    for key, pattern in int_patterns.items():
+        match = re.search(pattern, raw_content)
+        if match:
+            recovered[key] = int(match.group(1))
+
+    bool_patterns = {
+        'banned': r'"banned":\s*(true|false)',
+        'allow_move': r'"allow_move":\s*(true|false)',
+    }
+    for key, pattern in bool_patterns.items():
+        match = re.search(pattern, raw_content, re.IGNORECASE)
+        if match:
+            recovered[key] = match.group(1).lower() == 'true'
+
+    # 如果恢复后没有任何字段，则返回默认数据
+    if not recovered:
+        return _create_default_user_data(filepath)
+
+    # 构造默认数据（与 ensure_user_fields 一致）
+    default = {
+        "uid": "user-" + str(random.randint(0, 10**9 - 1)).zfill(9),
+        "username": "用户",
+        "userid": "user",
+        "password": "",
+        "birthday": "2000-01-01",
+        "register_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "balance": 20,
+        "credit": 0,
+        "jade": 0,
+        "star_rail_tickets": 0,
+        "banned": False,
+        "banned_until": None,
+        "redeemed_codes": [],
+        "redeem_history": [],
+        "cursor_style": "None",
+        "pet_size": "normal",
+        "owned_clothes": ["normal"],
+        "mailbox": [],
+        "last_birthday_greet_year": None,
+        "last_feed_time": None,
+        "volume": 0.5,
+        "allow_move": False,
+        "total_interactions": 0,
+        "total_open_count": 0,
+        "total_sign_days": 0,
+        "total_affection_up": 0,
+        "total_sleep_count": 0,
+        "total_chat_count": 0,
+        "monthly_interactions": 0,
+        "monthly_open_count": 0,
+        "monthly_sign_days": 0,
+        "monthly_affection_up": 0,
+        "monthly_sleep_count": 0,
+        "monthly_chat_count": 0,
+        "monthly_credit_gained": 0,
+        "monthly_cake_gained": 0,
+        "monthly_ai_click_count": 0,
+        "current_month": None,
+        "current_clothes": "normal",
+        "last_change_name_month": None,
+        "change_name_count": 0,
+        "monthly_jade_gained": 0,
+        "total_jade_gained": 0,
+        "monthly_ticket_gained": 0,
+        "total_ticket_gained": 0,
+        "birthday_reward_year": None,
+        "last_achievement_month": None,
+        "custom_items": {},
+        "last_state": "Standby",
+        "last_x": None,
+        "last_y": None,
+    }
+
+    # 合并恢复的数据
+    for key, value in recovered.items():
+        if key in default:
+            default[key] = value
+        else:
+            default[key] = value
+
+    # 确保关键字段存在
+    if not default.get('userid'):
+        default['userid'] = os.path.basename(filepath)[:-5]
+    if not default.get('username'):
+        default['username'] = default['userid']
+    if not default.get('uid'):
+        default['uid'] = "user-" + str(random.randint(0, 10**9 - 1)).zfill(9)
+    # 如果恢复后密码仍为空，且是 admin 账号，设置默认密码为 "admin"（方便登录）
+    if default.get('userid') == 'admin' and not default.get('password'):
+        default['password'] = 'admin'
+
+    # 写入修复后的文件
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        print(f"[修复] 已恢复并写入 {filepath}")
+        return default
+    except Exception as e:
+        print(f"[修复] 写入失败: {e}")
+        return _create_default_user_data(filepath)
+
+def _create_default_user_data(filepath):
+    """根据文件路径创建默认用户数据（用于严重损坏时）"""
+    userid = os.path.basename(filepath)[:-5]  # 去掉 .json
+    # 对于 admin 账号，设置默认密码为 "admin"，以便登录
+    default_password = "admin" if userid == "admin" else ""
+    default = {
+        "uid": "user-" + str(random.randint(0, 10**9 - 1)).zfill(9),
+        "username": userid,
+        "userid": userid,
+        "password": default_password,
+        "birthday": "2000-01-01",
+        "register_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "balance": 20,
+        "credit": 0,
+        "jade": 0,
+        "star_rail_tickets": 0,
+        "banned": False,
+        "banned_until": None,
+        "redeemed_codes": [],
+        "redeem_history": [],
+        "cursor_style": "None",
+        "pet_size": "normal",
+        "owned_clothes": ["normal"],
+        "mailbox": [],
+        "last_birthday_greet_year": None,
+        "last_feed_time": None,
+        "volume": 0.5,
+        "allow_move": False,
+        "total_interactions": 0,
+        "total_open_count": 0,
+        "total_sign_days": 0,
+        "total_affection_up": 0,
+        "total_sleep_count": 0,
+        "total_chat_count": 0,
+        "monthly_interactions": 0,
+        "monthly_open_count": 0,
+        "monthly_sign_days": 0,
+        "monthly_affection_up": 0,
+        "monthly_sleep_count": 0,
+        "monthly_chat_count": 0,
+        "monthly_credit_gained": 0,
+        "monthly_cake_gained": 0,
+        "monthly_ai_click_count": 0,
+        "current_month": None,
+        "current_clothes": "normal",
+        "last_change_name_month": None,
+        "change_name_count": 0,
+        "monthly_jade_gained": 0,
+        "total_jade_gained": 0,
+        "monthly_ticket_gained": 0,
+        "total_ticket_gained": 0,
+        "birthday_reward_year": None,
+        "last_achievement_month": None,
+        "custom_items": {},
+        "last_state": "Standby",
+        "last_x": None,
+        "last_y": None,
+    }
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(default, f, ensure_ascii=False, indent=2)
+        print(f"[修复] 已创建默认用户数据文件 {filepath}，密码: {default_password}")
+    except Exception as e:
+        print(f"[修复] 创建默认文件失败: {e}")
+    return default
 
 def ensure_user_fields(user_data, filepath=None):
     modified = False
     defaults = {
+        "custom_items": {},
         "balance": 20,
+        "jade": 0,
         "credit": 99999 if user_data.get("uid", "").lower().startswith("trailblazer") else 0,
         "last_sign_date": None,
         "banned": False,
@@ -218,6 +721,12 @@ def ensure_user_fields(user_data, filepath=None):
         "current_clothes": "normal",
         "last_change_name_month": None,
         "change_name_count": 0,
+        "monthly_jade_gained": 0,
+        "total_jade_gained": 0,
+        "monthly_ticket_gained": 0,
+        "total_ticket_gained": 0,
+        'birthday_reward_year': None,
+        'last_achievement_month': None,
     }
 
     for key, default_val in defaults.items():
@@ -435,7 +944,21 @@ def claim_mail_items(user_data, mail):
                     items_desc.append(f"时装 [{AVAILABLE_CLOTHES[clothes_id]['name']}]")
         elif itype == "star_rail_ticket":
             user_data["star_rail_tickets"] = user_data.get("star_rail_tickets", 0) + item["amount"]
+            # 新增统计（邮件领取计入专票统计）
+            user_data["monthly_ticket_gained"] = user_data.get("monthly_ticket_gained", 0) + item["amount"]
+            user_data["total_ticket_gained"] = user_data.get("total_ticket_gained", 0) + item["amount"]
             items_desc.append(f"星铁专票 x{item['amount']}")
+        elif itype == "jade":
+            user_data["jade"] = user_data.get("jade", 0) + item["amount"]
+            # 新增统计
+            user_data["monthly_jade_gained"] = user_data.get("monthly_jade_gained", 0) + item["amount"]
+            user_data["total_jade_gained"] = user_data.get("total_jade_gained", 0) + item["amount"]
+            items_desc.append(f"星琼 x{item['amount']}")
+        # ★ 新增 custom 处理
+        elif itype == "custom":
+            custom_items = user_data.setdefault('custom_items', {})
+            custom_items[item['id']] = custom_items.get(item['id'], 0) + item['amount']
+            items_desc.append(f"{item.get('name', item['id'])} x{item['amount']}")
     mail["claimed"] = True
     history = user_data.get("redeem_history", [])
     history.append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - 邮件领取: {', '.join(items_desc) if items_desc else '空邮件'}")
@@ -557,11 +1080,6 @@ class ConnectionThread(QThread):
                 reason = data.get('reason', '登录失败')
                 self.connection_failed.emit(reason)
                 self._running = False  # 登录失败才停止
-            elif mtype == 'server_shutdown':
-                # 服务端关闭/维护模式踢出
-                reason = data.get('reason', '服务器已关闭')
-                self.message_received.emit(json.dumps(msg))  # 让上层处理
-                self._running = False  # 断开连接
             else:
                 # 所有其他消息（聊天、列表、邮件、等）转发给上层
                 print(f"[DEBUG] Forwarding message type: {mtype}")
@@ -577,6 +1095,138 @@ class ConnectionThread(QThread):
                 self.sock.close()
             except:
                 pass
+
+class GachaBridge(QObject):
+    def __init__(self, firefly):
+        super().__init__(firefly)
+        self.firefly = firefly
+        self._webview = None
+        print(f"[GachaBridge] 初始化 | 主程序ID:{id(self.firefly)}")
+        print(f"联机状态:{self.firefly.mp_client.connected}")
+
+    def set_webview(self, webview):
+        self._webview = webview
+
+    def shutdown(self):
+        self._webview = None
+        print("[GachaBridge] webview引用清空")
+
+    # 在 GachaBridge 类中
+    @pyqtSlot(result=str)
+    def getHistory(self):
+        history = self.firefly.current_user.get("gacha_history", [])
+        return json.dumps({"history": history}, ensure_ascii=False)
+
+    @pyqtSlot(result=str)
+    def getUserInfo(self):
+        inv = self.firefly.online_inventory if self.firefly.online_inventory else self.firefly.current_user
+        tickets = inv.get("star_rail_tickets", 0)
+        jade = inv.get("jade", 0)
+        user_data = self.firefly.current_user or {}
+        res = {
+            "tickets": tickets,
+            "jade": jade,
+            "pity": user_data.get("gacha_pity_5", 0),
+            "guaranteed": user_data.get("gacha_guaranteed_5", False),
+            "uid": user_data.get("uid", "unknown")
+        }
+        return json.dumps(res, ensure_ascii=False)
+
+    @pyqtSlot(result=str)
+    def getHistory(self):
+        history = self.firefly.current_user.get("gacha_history", [])
+        return json.dumps({"history": history}, ensure_ascii=False)
+
+    @pyqtSlot(int, result=str)
+    def exchange(self, amount):
+        mp = self.firefly.mp_client
+        if amount <= 0:
+            return json.dumps({"success": False, "reason": "兑换数量需大于0"}, ensure_ascii=False)
+        if not mp or mp.conn_thread is None or not mp.connected:
+            return json.dumps({"success": False, "reason": "未连接服务器"}, ensure_ascii=False)
+        mp._send({"type": "exchange", "data": {"amount": amount}})
+        return json.dumps({"success": True, "pending": True})
+
+    @pyqtSlot(result=str)
+    def getInventory(self):
+        inv = self.firefly.online_inventory or self.firefly.current_user or {}
+        inv.setdefault("star_rail_tickets", 0)
+        inv.setdefault("jade", 0)
+        return json.dumps(inv, ensure_ascii=False)
+
+    @pyqtSlot(int)
+    def requestGacha(self, count):
+        print(f"[GachaBridge] 收到抽卡 count={count}")
+        mp = self.firefly.mp_client
+        if mp and mp.conn_thread and mp.connected:
+            mp._send({"type": "gacha", "data": {"count": count}})
+        else:
+            self._send_result({"success": False, "reason": "离线无法跃迁"})
+
+    def _send_result(self, data):
+        if not self._webview:
+            print("[GachaBridge] 窗口已销毁，跳过推送")
+            return
+        page = self._webview.page()
+        if not page:
+            return
+        js_code = f'window.onGachaResult({json.dumps(data, ensure_ascii=False)})'
+        page.runJavaScript(js_code)
+
+    def on_gacha_result(self, data):
+        print("[GachaBridge] 收到服务端原始抽卡数据：", data)
+        inv = self.firefly.online_inventory if self.firefly.online_inventory else self.firefly.current_user
+        inv = inv or {}
+        user_data = self.firefly.current_user or {}
+        data["tickets"] = inv.get("star_rail_tickets", 0)
+        data["jade"] = inv.get("jade", 0)
+        data["pity"] = data.get("pity") if "pity" in data else user_data.get("gacha_pity_5", 0)
+        data["guaranteed"] = data.get("guaranteed") if "guaranteed" in data else user_data.get("gacha_guaranteed_5",
+                                                                                               False)
+        print("[GachaBridge] 补齐资源后下发前端完整数据：", data)
+
+        # ----- 新增：更新本地 gacha_history -----
+        if "results" in data and data["results"]:
+            now = datetime.now()
+            time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+            history = user_data.get("gacha_history", [])
+            for item in data["results"]:
+                name = item.get("name", "未知")
+                if item.get("type") == "custom" and item.get("id") == "none":
+                    name = "谢谢参与"
+                history.append({
+                    "name": name,
+                    "rarity": item.get("rarity", 3),
+                    "time": time_str,
+                    "isUp": item.get("isUp", False),
+                    "isGuaranteed": item.get("isGuaranteed", False)
+                })
+            # 过滤 30 天
+            cutoff = datetime.now() - timedelta(days=30)
+            filtered = []
+            for h in history:
+                try:
+                    if datetime.strptime(h["time"], "%Y-%m-%d %H:%M:%S") >= cutoff:
+                        filtered.append(h)
+                except:
+                    filtered.append(h)
+            user_data["gacha_history"] = filtered
+            self.firefly._save_current_user()
+            # 同步更新服务端（如果联机，服务端会保存，但本地也要存）
+            if self.firefly.mp_client.connected:
+                # 可选：向服务端发送更新，但服务端 gacha 分支已保存，无需额外操作
+                pass
+
+        # 保存保底数据
+        if "pity" in data:
+            user_data["gacha_pity_5"] = data["pity"]
+        if "guaranteed" in data:
+            user_data["gacha_guaranteed_5"] = data["guaranteed"]
+        if self.firefly.current_user:
+            self.firefly._save_current_user()
+
+        # 下发到前端
+        self._send_result(data)
 
 class MultiplayerClient(QObject):
     login_success = pyqtSignal(dict)  # 传递完整登录数据
@@ -608,6 +1258,11 @@ class MultiplayerClient(QObject):
         self._last_ping_sent = 0
         self._latest_latency_ms = -1
 
+
+    def request_gacha(self, count):
+        if self.connected:
+            self._send({'type': 'gacha', 'data': {'count': count}})
+
     def ping(self):
         if not self.connected or not self.conn_thread:
             return
@@ -616,6 +1271,8 @@ class MultiplayerClient(QObject):
         self._send({'type': 'get_player_list', 'data': {}})
 
     def connect_to_server(self, host, port, userid, uid, name, country=''):
+        self.server_host = host
+        self.server_port = port
         self.conn_thread = ConnectionThread(host, port, userid, uid, name, country, CLIENT_VERSION)
         self.conn_thread.connection_success.connect(self._on_connection_success)
         self.conn_thread.connection_failed.connect(self._on_connection_failed)
@@ -635,7 +1292,6 @@ class MultiplayerClient(QObject):
         self._process_message(msg)  # 直接传递字典
 
     def _on_connection_success(self, data):
-        # 从字典中提取所有字段
         server_uid = data['server_uid']
         permission = data['permission']
         inventory = data.get('inventory')
@@ -649,10 +1305,14 @@ class MultiplayerClient(QObject):
         require_rename = data.get('require_rename', False)
         server_name = data.get('server_name', '')
         uid = data.get('uid', '')
-        chat_history = data.get('chat_history', [])  # ← 关键：获取聊天历史
+        chat_history = data.get('chat_history', [])
+        # ---------- 新增：保存 Web 端口（用于资源下载） ----------
+        web_port = data.get('web_port', 8080)  # 从服务端获取，默认 8080
+        self.server_web_port = web_port
 
         # 更新客户端状态
         self.connected = True
+        self.connection_changed.emit(True)
         self.server_uid = server_uid
         self.server_permission = permission
         self.stats = stats
@@ -666,9 +1326,11 @@ class MultiplayerClient(QObject):
         self.firefly.server_display_name = server_display_name
         self.firefly.online_name = server_name
 
-        # 保存聊天历史到 Firefly
-        self.firefly.chat_history = chat_history
+        # 保存 Web 信息到 Firefly（用于资源下载）  ← 修复点
+        self.firefly.server_host = self.server_host  # 使用保存的 host
+        self.firefly.server_web_port = web_port
 
+        self.firefly.chat_history = chat_history
         self.firefly.online_inventory = inventory
         if inventory is not None:
             self.firefly.online_signed_today = inventory.get('last_sign_date') == datetime.now().strftime('%Y-%m-%d')
@@ -810,6 +1472,20 @@ class MultiplayerClient(QObject):
                 print(f"[PING] 收到响应，延迟 {self._latest_latency_ms}ms，时间 {time.time()}")  # 新增
                 self._last_ping_sent = 0
             self.online_list_updated.emit(data.get('players', []))
+        elif mtype == 'player_list':
+            players = data.get('players', [])
+            self.firefly.online_player_count = len(players)
+            # 从服务端获取 max_players（若服务端未返回，则保持 None）
+            self.firefly.max_players = data.get('max_players')  # 可能为 None
+            self.firefly.update_mp_menu_text()  # 刷新菜单显示
+            self.firefly.update_online_list_overlay(players)
+        elif mtype == 'gacha_result':
+            # 修复：self.fire → self.firefly，不会再报属性错误
+            if self.firefly and hasattr(self.firefly, '_current_gacha_bridge') and self.firefly._current_gacha_bridge:
+                self.firefly._current_gacha_bridge.on_gacha_result(data)
+        elif mtype == 'exchange_result':
+            if self.firefly and hasattr(self.firefly, '_current_gacha_bridge') and self.firefly._current_gacha_bridge:
+                self.firefly._current_gacha_bridge._send_result(data)
         elif mtype == 'mute_status':
             print(f"[调试] 收到 mute_status 消息，data={data}")
             try:
@@ -873,21 +1549,43 @@ class MultiplayerClient(QObject):
             reason = data.get('reason', '未知原因')
             self.login_failed.emit(reason)
             self.disconnect()
-        elif mtype == 'server_shutdown':
-            reason = data.get('reason', '服务器已关闭')
-            self.server_shutdown.emit(reason)
-            self.disconnect()
         elif mtype == 'permission_changed':
-            self.server_permission = data.get('permission', 'user')
-            self.server_uid = data.get('server_uid', self.server_uid)
+            new_permission = data.get('permission', 'user')
+            new_server_uid = data.get('server_uid', self.server_uid)
             new_uid = data.get('uid', '')
-            print(f"[权限变更] 收到新 UID: {new_uid}")  # 控制台输出
+
+            # 更新权限相关变量
+            self.server_permission = new_permission
+            self.server_uid = new_server_uid
+
+            self.firefly.is_admin = (new_permission == 'admin')
+            self.firefly.server_permission = new_permission
+
+            # ---------- 关键修复：确保 UID 前缀正确 ----------
             if new_uid:
-                self.online_uid = new_uid  # ← 关键：更新 UID
-            self.mp_client.server_uid = self.server_uid
-            self.mp_client.server_permission = self.server_permission
-            self.permission_changed.emit()
-            self.create_menu()  # 刷新右键菜单
+                # 服务端显式下发了新 UID，直接使用
+                uid_to_set = new_uid
+            else:
+                # 服务端未下发，根据当前 UID 自动修正前缀
+                current_uid = self.firefly.online_uid or self.firefly.current_user.get('uid', '')
+                if self.firefly.is_admin and current_uid.startswith('user-'):
+                    uid_to_set = current_uid.replace('user-', 'admin-', 1)
+                elif not self.firefly.is_admin and current_uid.startswith('admin-'):
+                    uid_to_set = current_uid.replace('admin-', 'user-', 1)
+                else:
+                    uid_to_set = current_uid  # 保持原样
+
+            if uid_to_set:
+                self.firefly.online_uid = uid_to_set
+                self.firefly.current_user['uid'] = uid_to_set
+
+            # 刷新右键菜单（托盘菜单会同步更新）
+            self.firefly.create_menu()
+            if self.firefly.tray_icon:
+                self.firefly.tray_icon.setContextMenu(self.firefly.create_menu())
+
+            # 其他原有逻辑（如有）
+            self.firefly.on_permission_changed()
         elif mtype == 'chat_history_data':
             self.firefly.chat_history = data.get('history', [])
             if self.firefly._refresh_chat_pending:
@@ -920,7 +1618,18 @@ class MultiplayerClient(QObject):
             self.sign_result_signal.emit(data.get('success', False), data.get('message', ''))
         elif mtype == 'inventory_update':
             inv = data.get('inventory', {})
+            old_jade = self.firefly.online_inventory.get('jade', 0) if self.firefly.online_inventory else 0
             self.firefly.online_inventory = inv
+            new_jade = inv.get('jade', 0)
+            if new_jade > old_jade:
+                # 增加星琼获取统计
+                self.firefly.current_user["monthly_jade_gained"] = self.firefly.current_user.get("monthly_jade_gained",
+                                                                                                 0) + (
+                                                                               new_jade - old_jade)
+                self.firefly.current_user["total_jade_gained"] = self.firefly.current_user.get("total_jade_gained",
+                                                                                               0) + (
+                                                                             new_jade - old_jade)
+                self.firefly._save_current_user()
             today = datetime.now().strftime('%Y-%m-%d')
             self.firefly.online_signed_today = (inv.get('last_sign_date') == today)
             self.firefly.update_bag_display()
@@ -961,14 +1670,15 @@ class MailboxWindow(QDialog):
         self.firefly = firefly
         self.online_mails = online_mails
 
-        # 使用服务端邮件或本地邮件
         if online_mails is not None:
             self.mails = online_mails
-            # 联机模式：从本地用户数据读取已读邮件ID列表
             self.local_read_mails = self.firefly.current_user.get("read_mails", [])
+            self.deleted_mails = self.firefly.current_user.get("deleted_mails", [])
+            self.firefly.mp_client.mails_ready.connect(self.on_mails_updated)
         else:
             self.mails = firefly.current_user.get("mailbox", [])
             self.local_read_mails = []
+            self.deleted_mails = []
 
         self.setWindowTitle("邮箱")
         self.setFixedSize(820, 550)
@@ -992,7 +1702,7 @@ class MailboxWindow(QDialog):
         screen_center = QApplication.primaryScreen().availableGeometry().center()
         self.move(screen_center - self.rect().center())
 
-    # ---------- 鼠标事件（拖拽） ----------
+    # ---------- 鼠标事件 ----------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.pos().y() <= 30:
             self.draggable = True
@@ -1080,12 +1790,30 @@ class MailboxWindow(QDialog):
         self.read_all_btn = QPushButton("全部已读")
         self.read_all_btn.clicked.connect(self.read_all)
 
+        # 删除已读按钮 - 红色
         self.delete_read_btn = QPushButton("删除已读")
+        self.delete_read_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #D32F2F;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #F44336;
+            }
+            QPushButton:disabled {
+                background-color: #666666;
+            }
+        """)
         self.delete_read_btn.clicked.connect(self.delete_read_mails)
-        # 联机模式禁用删除已读
+        self.delete_read_btn.setEnabled(True)
         if self.online_mails is not None:
-            self.delete_read_btn.setEnabled(False)
-            self.delete_read_btn.setToolTip("联机模式暂不支持删除邮件")
+            self.delete_read_btn.setToolTip("已删除的邮件将不再显示（本地隐藏）")
+        else:
+            self.delete_read_btn.setToolTip("")
 
         self.close_btn = QPushButton("关闭")
         self.close_btn.clicked.connect(self.close)
@@ -1098,14 +1826,36 @@ class MailboxWindow(QDialog):
 
         self.setLayout(main_layout)
 
+    # ---------- 联机模式邮件更新 ----------
+    def on_mails_updated(self, mails):
+        """收到服务端最新邮件列表时刷新，并自动标记已领取的邮件为已读"""
+        # 过滤已删除的邮件
+        filtered = [m for m in mails if m['id'] not in self.deleted_mails]
+        # 自动将已领取的邮件标记为已读
+        for mail in filtered:
+            if mail.get("claimed", False):
+                mail["read"] = True
+                if mail["id"] not in self.local_read_mails:
+                    self.local_read_mails.append(mail["id"])
+        self.mails = filtered
+        self.load_mails()
+        self.show_detail_for_current()
+        # 保存已读记录
+        if self.online_mails is not None:
+            self.firefly.current_user["read_mails"] = self.local_read_mails
+            self.firefly._save_current_user()
+
     # ---------- 加载邮件列表 ----------
     def load_mails(self):
+        # 联机模式下过滤已删除的邮件
+        if self.online_mails is not None:
+            self.mails = [m for m in self.mails if m['id'] not in self.deleted_mails]
+
         self.mail_list.blockSignals(True)
         self.mail_list.clear()
         for i, mail in enumerate(reversed(self.mails)):
             title = mail["title"]
 
-            # 联机模式：从本地已读列表恢复状态
             if self.online_mails is not None and mail["id"] in self.local_read_mails:
                 mail["read"] = True
 
@@ -1115,11 +1865,10 @@ class MailboxWindow(QDialog):
                 title += " [已领取]"
 
             item = QListWidgetItem(title)
-            # 已领取邮件灰色且不可选
             if mail.get("claimed"):
                 item.setForeground(QColor(128, 128, 128))
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            item.setData(Qt.UserRole, len(self.mails)-1-i)
+                # 保留可选中状态（不取消 ItemIsSelectable）
+            item.setData(Qt.UserRole, len(self.mails) - 1 - i)
             self.mail_list.addItem(item)
         self.mail_list.blockSignals(False)
 
@@ -1133,9 +1882,7 @@ class MailboxWindow(QDialog):
 
     # ---------- 点击邮件 ----------
     def on_mail_clicked(self, item):
-        mail = self.get_mail_by_item(item)
-        if mail and mail.get("claimed"):
-            return  # 已领取不显示详情
+        # 直接显示详情，不论是否已领取
         self.show_detail_for_item(item)
 
     def show_detail_for_current(self):
@@ -1156,10 +1903,9 @@ class MailboxWindow(QDialog):
             mail["read"] = True
             if mail["id"] not in self.local_read_mails:
                 self.local_read_mails.append(mail["id"])
-                # 保存到用户数据（也可在 closeEvent 统一保存，此处即时保存）
                 self.firefly.current_user["read_mails"] = self.local_read_mails
                 self.firefly._save_current_user()
-            # 更新列表项文字（去除 "●"）
+            # 更新列表项文字
             self.mail_list.blockSignals(True)
             row = self.mail_list.row(item)
             title = mail["title"]
@@ -1168,7 +1914,7 @@ class MailboxWindow(QDialog):
             item.setText(title)
             self.mail_list.blockSignals(False)
 
-        # 构建详情（HTML格式）
+        # 构建详情（与原逻辑相同）
         items_html = []
         has_ticket = False
         for it in mail["items"]:
@@ -1183,6 +1929,8 @@ class MailboxWindow(QDialog):
             elif it["type"] == "star_rail_ticket":
                 has_ticket = True
                 items_html.append(f'<font color="#FFD700">星铁专票 x{it["amount"]}</font>')
+            elif it["type"] == "jade":
+                items_html.append(f'<font color="#FFD700">星琼 x{it["amount"]}</font>')
 
         items_text = ', '.join(items_html) if items_html else "无"
         status = "已领取" if mail.get("claimed") else "未领取"
@@ -1201,18 +1949,22 @@ class MailboxWindow(QDialog):
         self.detail_text.setHtml(detail_html)
 
         if has_ticket:
-            self.ticket_label.setText("星铁专票 x1")
+            self.ticket_label.setText("星铁专票")
             self.ticket_label.show()
         else:
             self.ticket_label.hide()
 
-        # 无物品邮件禁用领取按钮
+        # ★ 修改：根据领取状态显示按钮文字
         if not mail.get("items"):
             self.claim_btn.setEnabled(False)
             self.claim_btn.setText("无需领取")
         else:
-            self.claim_btn.setEnabled(not mail.get("claimed"))
-            self.claim_btn.setText("领取")
+            if mail.get("claimed"):
+                self.claim_btn.setEnabled(False)
+                self.claim_btn.setText("已领取")
+            else:
+                self.claim_btn.setEnabled(True)
+                self.claim_btn.setText("领取")
 
     # ---------- 领取当前邮件 ----------
     def claim_current_mail(self):
@@ -1221,56 +1973,52 @@ class MailboxWindow(QDialog):
         if mail is None or mail.get("claimed"):
             return
 
-        # 无物品邮件提示
         if not mail.get("items"):
             QMessageBox.information(self, "提示", "该邮件无需领取。")
             return
 
         if self.online_mails is not None:
-            # 联机：发送领取请求
             self.firefly.mp_client._send({'type': 'claim_mail', 'data': {'mail_id': mail['id']}})
-            self._pending_credit = sum(item['amount'] for item in mail['items'] if item['type'] == 'credit')
+            # 等待服务端更新，通过 on_mails_updated 自动标记已读
         else:
-            # 单机：直接领取
             success, desc = claim_mail_items(self.firefly.current_user, mail)
             if success:
+                # 标记已读
+                mail["read"] = True
                 for item in mail['items']:
                     if item['type'] == 'credit':
                         self.firefly.check_month_reset()
                         self.firefly.current_user["monthly_credit_gained"] += item['amount']
                 self.firefly._save_current_user()
                 self.firefly.update_bag_display()
-                # 更新列表和详情
-                title = mail["title"] + " [已领取]"
-                self.mail_list.blockSignals(True)
-                item.setText(title)
-                self.mail_list.blockSignals(False)
+                self.load_mails()
                 self.show_detail_for_item(item)
                 QTimer.singleShot(0, lambda: QMessageBox.information(self, "成功", f"物品已领取！获得 {', '.join(desc)}"))
 
     # ---------- 一键领取 ----------
     def claim_all(self):
-        for mail in self.mails:
-            if not mail.get("claimed") and mail.get("items"):
-                if self.online_mails is not None:
+        if self.online_mails is not None:
+            for mail in self.mails:
+                if not mail.get("claimed") and mail.get("items"):
                     self.firefly.mp_client._send({'type': 'claim_mail', 'data': {'mail_id': mail['id']}})
-                else:
+            # 请求刷新，等待 on_mails_updated 自动标记已读
+            self.firefly.mp_client._send({'type': 'get_mails'})
+            QMessageBox.information(self, "提示", "已发送领取请求，请稍候刷新。")
+        else:
+            for mail in self.mails:
+                if not mail.get("claimed") and mail.get("items"):
                     claim_mail_items(self.firefly.current_user, mail)
-        if self.online_mails is None:
+                    mail["read"] = True  # 标记已读
             self.firefly._save_current_user()
             self.firefly.update_bag_display()
             self.load_mails()
             self.show_detail_for_current()
             QTimer.singleShot(0, lambda: QMessageBox.information(self, "提示", "已领取所有未领取邮件"))
-        else:
-            # 联机模式：关闭窗口（由服务端推送更新）
-            self.close()
 
     # ---------- 全部已读 ----------
     def read_all(self):
         for mail in self.mails:
             mail["read"] = True
-            # 联机模式同步记录到本地列表
             if self.online_mails is not None and mail["id"] not in self.local_read_mails:
                 self.local_read_mails.append(mail["id"])
         if self.online_mails is None:
@@ -1281,41 +2029,61 @@ class MailboxWindow(QDialog):
         self.load_mails()
         self.show_detail_for_current()
 
-    # ---------- 删除已读邮件（单机） ----------
+    # ---------- 删除已读 ----------
     def delete_read_mails(self):
         if self.online_mails is not None:
-            QMessageBox.information(self, "提示", "联机模式下邮件由服务器管理，暂不支持删除。")
-            return
-
-        to_delete = [mail for mail in self.mails if mail.get("read")]
-        if not to_delete:
-            QMessageBox.information(self, "提示", "没有已读邮件可删除。")
-            return
-
-        reply = QMessageBox.question(self, "确认删除", f"确定要删除 {len(to_delete)} 封已读邮件吗？",
-                                     QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.No:
-            return
-
-        for mail in to_delete:
-            self.mails.remove(mail)
-
-        self.firefly.current_user["mailbox"] = self.mails
-        self.firefly._save_current_user()
-
-        self.load_mails()
-        self.detail_text.clear()
-        self.ticket_label.hide()
-        self.claim_btn.setEnabled(False)
-        self.claim_btn.setText("领取")
-        QMessageBox.information(self, "成功", f"已删除 {len(to_delete)} 封已读邮件。")
+            # 联机模式：本地隐藏，不再恢复
+            to_delete = [mail for mail in self.mails if mail.get("read")]
+            if not to_delete:
+                QMessageBox.information(self, "提示", "没有已读邮件可删除。")
+                return
+            reply = QMessageBox.question(self, "确认删除", f"确定要删除 {len(to_delete)} 封已读邮件吗？（已删除的邮件将不再显示）",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+            for mail in to_delete:
+                if mail['id'] not in self.deleted_mails:
+                    self.deleted_mails.append(mail['id'])
+                self.mails.remove(mail)
+            self.firefly.current_user["deleted_mails"] = self.deleted_mails
+            self.firefly._save_current_user()
+            self.load_mails()
+            self.detail_text.clear()
+            self.ticket_label.hide()
+            self.claim_btn.setEnabled(False)
+            self.claim_btn.setText("领取")
+            QMessageBox.information(self, "成功", f"已隐藏 {len(to_delete)} 封已读邮件。")
+        else:
+            # 单机模式：真实删除
+            to_delete = [mail for mail in self.mails if mail.get("read")]
+            if not to_delete:
+                QMessageBox.information(self, "提示", "没有已读邮件可删除。")
+                return
+            reply = QMessageBox.question(self, "确认删除", f"确定要删除 {len(to_delete)} 封已读邮件吗？",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+            for mail in to_delete:
+                self.mails.remove(mail)
+            self.firefly.current_user["mailbox"] = self.mails
+            self.firefly._save_current_user()
+            self.load_mails()
+            self.detail_text.clear()
+            self.ticket_label.hide()
+            self.claim_btn.setEnabled(False)
+            self.claim_btn.setText("领取")
+            QMessageBox.information(self, "成功", f"已删除 {len(to_delete)} 封已读邮件。")
 
     # ---------- 关闭窗口 ----------
     def closeEvent(self, event):
-        # 联机模式保存已读列表
         if self.online_mails is not None:
             self.firefly.current_user["read_mails"] = self.local_read_mails
+            self.firefly.current_user["deleted_mails"] = self.deleted_mails
             self.firefly._save_current_user()
+            try:
+                self.firefly.mp_client.mails_ready.disconnect(self.on_mails_updated)
+            except:
+                pass
         event.accept()
 
 
@@ -1528,7 +2296,6 @@ class HistoryWindow(QDialog):
         self.move(screen_center - self.rect().center())
 
     def load_history(self):
-        print(f"[聊天窗口] 加载历史，共 {len(self.firefly.chat_history)} 条")
         history = self.user_data.get("redeem_history", [])
         for record in history:
             self.list_widget.addItem(record)
@@ -1537,181 +2304,628 @@ class HistoryWindow(QDialog):
 
 
 # ====================== 商店窗口 ======================
-class ShopWindow(QDialog):
+class ShopMainWindow(QDialog):
+    """
+    左侧分类列表 + 右侧商品网格，数据驱动。
+    单机模式只显示「食物」分类；联机模式显示「食物」和「兑换」。
+    支持库存更新信号，自动刷新卡片状态。
+    """
     def __init__(self, firefly, parent=None):
         super().__init__(parent)
-        set_window_emoji_icon(self, "🛒")
         self.firefly = firefly
-        self.setWindowTitle("商店 - 橡木蛋糕卷")
-        self.setFixedSize(550, 420)
+        self.is_online = self.firefly.mp_client.connected
+        set_window_emoji_icon(self, "🛒")
+        self.setWindowTitle("信用点商店")
+        self.setMinimumSize(800, 550)
         self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
                 border-radius: 12px;
             }
-            QLabel {
-                color: #888888;
-                font-size: 14px;
-            }
-            QLineEdit {
-                border: 1px solid #555555;
-                border-radius: 8px;
-                padding: 8px;
+            QListWidget {
                 background-color: #2D2D2D;
-                color: #888888;
+                border: none;
+                border-radius: 8px;
+                color: #CCCCCC;
+                font-size: 15px;
+                padding: 10px 0;
+                outline: none;
+            }
+            QListWidget::item {
+                padding: 10px 20px;
+                border-radius: 6px;
+            }
+            QListWidget::item:selected {
+                background-color: #4CAF50;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: #3A3A3A;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QWidget#card {
+                background-color: #2D2D2D;
+                border-radius: 12px;
+                padding: 12px;
+                margin: 6px;
+            }
+            QWidget#card:hover {
+                background-color: #3A3A3A;
+            }
+            QLabel#name {
+                color: #FFFFFF;
+                font-size: 15px;
+                font-weight: bold;
+                margin-top: 6px;
+            }
+            QLabel#price {
+                color: #FFD700;
                 font-size: 14px;
             }
-            QLineEdit:focus {
-                border-color: #4CAF50;
+            QLabel#desc {
+                color: #888888;
+                font-size: 11px;
+                margin-bottom: 6px;
+            }
+        """)
+
+        # ---------- 商品数据 ----------
+        self.goods_list = [
+            {
+                "name": "橡木蛋糕卷",
+                "price": 3600,
+                "desc": "流萤最喜欢的点心",
+                "emoji": "🍰",
+                "img_paths": [
+                    "assets/images/foods/Cake.png",
+                    "./assets/images/foods/Cake.png",
+                    os.path.join(os.path.dirname(sys.argv[0]), "assets/images/foods/Cake.png")
+                ],
+                "item_type": "cake",
+                "amount_per_unit": 1,
+                "category": "食物",
+                "currency": "credit"
+            }
+        ]
+
+        # 联机模式才添加星铁专票
+        if self.is_online:
+            self.goods_list.append({
+                "name": "星铁专票",
+                "price": 160,
+                "desc": "跃迁所需凭证",
+                "emoji": "🎫",
+                "img_paths": [
+                    "assets/images/star_rail_ticket.png",
+                    "./assets/images/star_rail_ticket.png",
+                    os.path.join(os.path.dirname(sys.argv[0]), "assets/images/star_rail_ticket.png")
+                ],
+                "item_type": "star_rail_ticket",
+                "amount_per_unit": 1,
+                "category": "兑换",
+                "currency": "jade"
+            })
+
+        # 连接库存更新信号
+        self.firefly.inventory_updated.connect(self.on_inventory_updated)
+
+        self.init_ui()
+        screen_center = QApplication.primaryScreen().availableGeometry().center()
+        self.move(screen_center - self.rect().center())
+
+    def closeEvent(self, event):
+        """窗口关闭时断开信号连接"""
+        try:
+            self.firefly.inventory_updated.disconnect(self.on_inventory_updated)
+        except Exception:
+            pass
+        event.accept()
+
+    def _get_inventory(self):
+        if self.firefly.mp_client.connected and self.firefly.online_inventory is not None:
+            return self.firefly.online_inventory
+        return self.firefly.current_user
+
+    def _get_balance(self, currency_type):
+        inv = self._get_inventory()
+        if currency_type == "credit":
+            return inv.get('credit', 0)
+        else:
+            return inv.get('jade', 0)
+
+    def init_ui(self):
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+
+        # 左侧分类列表
+        left_widget = QWidget()
+        left_widget.setFixedWidth(150)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.category_list = QListWidget()
+        self.category_list.addItem("食物")
+        if self.is_online:
+            self.category_list.addItem("兑换")
+        self.category_list.setCurrentRow(0)
+        self.category_list.itemClicked.connect(self.on_category_changed)
+        left_layout.addWidget(self.category_list)
+
+        main_layout.addWidget(left_widget)
+
+        # 右侧网格
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        title = QLabel("🛒 信用点商店")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #FFFFFF; margin-bottom: 10px;")
+        right_layout.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.container = QWidget()
+        self.container.setStyleSheet("background: transparent;")
+        self.grid = QGridLayout(self.container)
+        self.grid.setContentsMargins(10, 10, 10, 10)
+        self.grid.setSpacing(15)
+        scroll.setWidget(self.container)
+        right_layout.addWidget(scroll)
+
+        main_layout.addWidget(right_widget, 1)
+
+        self.current_category = "食物"
+        self.refresh_grid()
+
+    def on_category_changed(self, item):
+        self.current_category = item.text()
+        self.refresh_grid()
+
+    def refresh_grid(self):
+        # 清空网格
+        while self.grid.count():
+            child = self.grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        filtered = [g for g in self.goods_list if g.get("category") == self.current_category]
+        col_count = 2 if len(filtered) <= 2 else 3
+        for index, goods in enumerate(filtered):
+            row = index // col_count
+            col = index % col_count
+            card = self._create_card(goods)
+            self.grid.addWidget(card, row, col, 1, 1, Qt.AlignTop)
+
+        if not filtered:
+            label = QLabel("暂无商品")
+            label.setStyleSheet("color: #888888; font-size: 16px;")
+            label.setAlignment(Qt.AlignCenter)
+            self.grid.addWidget(label, 0, 0, 1, col_count)
+
+    def _create_card(self, goods):
+        card = QWidget()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(5)
+        layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        # 图标
+        icon_label = QLabel()
+        icon_label.setFixedSize(80, 80)
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("background: transparent;")
+        pixmap = None
+        for path in goods.get("img_paths", []):
+            if os.path.exists(path):
+                pixmap = QPixmap(path)
+                if not pixmap.isNull():
+                    break
+        if pixmap and not pixmap.isNull():
+            pixmap = pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            icon_label.setPixmap(pixmap)
+        else:
+            icon_label.setText(goods.get("emoji", "📦"))
+            icon_label.setStyleSheet("font-size: 50px; background: transparent;")
+        layout.addWidget(icon_label, alignment=Qt.AlignCenter)
+
+        # 名称
+        name_label = QLabel(goods["name"])
+        name_label.setObjectName("name")
+        name_label.setWordWrap(True)
+        layout.addWidget(name_label)
+
+        # 价格（不再显示描述）
+        currency = goods.get("currency", "credit")
+        if currency == "credit":
+            price_text = f"{goods['price']} 信用点"
+        else:
+            price_text = f"{goods['price']} 星琼"
+        price_label = QLabel(price_text)
+        price_label.setObjectName("price")
+        layout.addWidget(price_label)
+
+        # 购买按钮
+        buy_btn = self._create_buy_button(goods)
+        layout.addWidget(buy_btn)
+
+        # 保存按钮引用以便更新
+        card.buy_btn = buy_btn
+        card.goods = goods
+
+        return card
+
+    def _create_buy_button(self, goods):
+        btn = QPushButton("购买")
+        btn.setFixedWidth(80)
+        currency = goods.get("currency", "credit")
+        balance = self._get_balance(currency)
+        max_buy = balance // goods['price'] if goods['price'] > 0 else 0
+        can_buy = max_buy >= 1
+        btn.setEnabled(can_buy)
+        if can_buy:
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 14px;
+                    font-size: 13px;
+                }
+                QPushButton:hover {
+                    background-color: #45A049;
+                }
+                QPushButton:pressed {
+                    background-color: #3D8B40;
+                }
+            """)
+        else:
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #666666;
+                    color: #AAAAAA;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 14px;
+                    font-size: 13px;
+                }
+            """)
+        btn.clicked.connect(lambda checked, g=goods: self._open_exchange_dialog(g))
+        return btn
+
+    def on_inventory_updated(self):
+        """库存更新时刷新所有卡片"""
+        # 重新生成所有卡片
+        self.refresh_grid()
+
+    def _open_exchange_dialog(self, goods):
+        dlg = ShopExchangeDialog(self.firefly, goods, self)
+        dlg.exec_()
+
+# ====================== 兑换弹窗（包含描述） ======================
+class ShopExchangeDialog(QDialog):
+    """
+    通用兑换弹窗，支持 credit 和 jade 两种货币。
+    滑块上限：可购买数量超过 9999 时显示 9999，否则显示实际可购买数。
+    支持库存更新信号，实时刷新余额和滑块。
+    """
+    def __init__(self, firefly, item_data, parent=None):
+        super().__init__(parent)
+        self.firefly = firefly
+        self.item_data = item_data
+        self.setWindowTitle("兑换")
+        self.setFixedSize(550, 400)
+        self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        self.setModal(True)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1E1E1E;
+                border-radius: 12px;
+            }
+            QLabel {
+                color: #CCCCCC;
+                font-size: 14px;
+            }
+            QLabel#title {
+                color: #FFFFFF;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QLabel#desc {
+                color: #888888;
+                font-size: 13px;
+            }
+            QSlider {
+                height: 20px;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid #444444;
+                background: #2D2D2D;
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #4CAF50;
+                width: 18px;
+                height: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #45A049;
+            }
+            QSlider::sub-page:horizontal {
+                background: #4CAF50;
+                border-radius: 3px;
             }
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
                 border: none;
-                border-radius: 8px;
-                padding: 10px;
+                border-radius: 6px;
+                padding: 8px 20px;
                 font-size: 14px;
             }
             QPushButton:hover {
                 background-color: #45A049;
             }
-            QSpinBox {
-                border: 1px solid #555555;
-                border-radius: 8px;
-                padding: 5px;
-                background-color: #2D2D2D;
-                color: #888888;
-                font-size: 14px;
+            QPushButton:pressed {
+                background-color: #3D8B40;
+            }
+            QPushButton#cancel {
+                background-color: #666666;
+            }
+            QPushButton#cancel:hover {
+                background-color: #888888;
             }
         """)
+
+        # 连接库存更新信号
+        self.firefly.inventory_updated.connect(self._on_inventory_updated)
+
+        # 获取库存和货币信息
+        self.inv = self._get_inventory()
+        self.currency = self.item_data.get("currency", "credit")
+        if self.currency == "credit":
+            self.balance = self.inv.get('credit', 0)
+            self.currency_name = "信用点"
+        else:
+            self.balance = self.inv.get('jade', 0)
+            self.currency_name = "星琼"
+
+        self.price = self.item_data['price']
+        # 计算最大可购买数量（实际货币能买的数量）
+        max_possible = self.balance // self.price if self.price > 0 else 0
+        # 上限限制：若超过 9999 则设为 9999，否则为实际数量
+        if max_possible >= 9999:
+            self.max_quantity = 9999
+        else:
+            self.max_quantity = max_possible  # 可能为 0
+
         self.init_ui()
+        self.update_display()
         screen_center = QApplication.primaryScreen().availableGeometry().center()
         self.move(screen_center - self.rect().center())
 
-    def get_inventory(self):
-        """获取当前应显示的库存（单机/联机）"""
+    def closeEvent(self, event):
+        """窗口关闭时断开信号连接"""
+        try:
+            self.firefly.inventory_updated.disconnect(self._on_inventory_updated)
+        except Exception:
+            pass
+        event.accept()
+
+    def _get_inventory(self):
         if self.firefly.mp_client.connected and self.firefly.online_inventory is not None:
             return self.firefly.online_inventory
         return self.firefly.current_user
 
     def init_ui(self):
-        layout = QVBoxLayout()
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(15)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(25, 25, 25, 20)
+        main_layout.setSpacing(15)
 
-        title = QLabel("信用点商店")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:20px; font-weight:bold; color:#FFFFFF;")
-        layout.addWidget(title)
+        # ---- 顶部：图标 + 标题/描述 ----
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(15)
 
-        image_label = QLabel()
-        possible_paths = [
-            "assets/images/foods/Cake.png",
-            "./assets/images/foods/Cake.png",
-            os.path.join(os.path.dirname(sys.argv[0]), "assets/images/foods/Cake.png")
-        ]
+        icon_label = QLabel()
+        icon_label.setFixedSize(80, 80)
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("background: transparent;")
         pixmap = None
-        for path in possible_paths:
+        for path in self.item_data.get("img_paths", []):
             if os.path.exists(path):
                 pixmap = QPixmap(path)
-                break
+                if not pixmap.isNull():
+                    break
         if pixmap and not pixmap.isNull():
-            pixmap = pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            image_label.setPixmap(pixmap)
-            image_label.setAlignment(Qt.AlignCenter)
+            pixmap = pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            icon_label.setPixmap(pixmap)
         else:
-            image_label.setText("📦 橡木蛋糕卷")
-            image_label.setAlignment(Qt.AlignCenter)
-            image_label.setStyleSheet("font-size: 40px;")
-        layout.addWidget(image_label)
+            icon_label.setText(self.item_data.get("emoji", "📦"))
+            icon_label.setStyleSheet("font-size: 50px; background: transparent;")
+        top_layout.addWidget(icon_label)
 
-        price_label = QLabel("单价：3600 信用点 / 个")
-        price_label.setAlignment(Qt.AlignCenter)
-        price_label.setStyleSheet("font-size: 16px; color: #FFD700;")
-        layout.addWidget(price_label)
+        info_layout = QVBoxLayout()
+        name_label = QLabel(self.item_data["name"])
+        name_label.setObjectName("title")
+        info_layout.addWidget(name_label)
 
-        self.credit_label = QLabel()
-        self.credit_label.setAlignment(Qt.AlignCenter)
-        self.credit_label.setStyleSheet("font-size: 14px; color: #AAAAAA;")
-        layout.addWidget(self.credit_label)
+        if self.item_data.get("desc"):
+            desc_label = QLabel(self.item_data["desc"])
+            desc_label.setObjectName("desc")
+            desc_label.setWordWrap(True)
+            info_layout.addWidget(desc_label)
 
-        amount_layout = QHBoxLayout()
-        amount_label = QLabel("购买数量：")
-        self.amount_spin = QSpinBox()
-        self.amount_spin.setRange(1, 1)
-        self.amount_spin.setValue(1)
-        self.amount_spin.setSuffix(" 个")
-        self.amount_spin.valueChanged.connect(self.update_total)
-        amount_layout.addWidget(amount_label)
-        amount_layout.addWidget(self.amount_spin)
-        layout.addLayout(amount_layout)
+        top_layout.addLayout(info_layout, 1)
+        main_layout.addLayout(top_layout)
 
-        self.total_price_label = QLabel("总计：3600 信用点")
-        self.total_price_label.setAlignment(Qt.AlignCenter)
-        self.total_price_label.setStyleSheet("font-size: 14px; color: #AAAAAA;")
-        layout.addWidget(self.total_price_label)
+        # ---- 中间：滑块 + 数量 ----
+        slider_layout = QHBoxLayout()
+        slider_layout.setSpacing(15)
 
-        buy_btn = QPushButton("购买")
-        buy_btn.clicked.connect(self.buy)
-        layout.addWidget(buy_btn)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, self.max_quantity)
+        initial_value = 1 if self.max_quantity >= 1 else 0
+        self.slider.setValue(initial_value)
+        self.slider.setEnabled(self.max_quantity > 0)
+        self.slider.valueChanged.connect(self.on_slider_changed)
+        slider_layout.addWidget(self.slider, 1)
 
-        self.setLayout(layout)
-        self.refresh_display()
+        self.quantity_label = QLabel(f"兑换数量：{initial_value}")
+        self.quantity_label.setFixedWidth(120)
+        self.quantity_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.quantity_label.setStyleSheet("color: #FFFFFF; font-size: 15px;")
+        slider_layout.addWidget(self.quantity_label)
 
-    def refresh_display(self):
-        inv = self.get_inventory()
-        credit = inv.get("credit", 0)
-        self.credit_label.setText(f"当前信用点：{credit}")
-        max_can_buy = credit // 3600
-        if max_can_buy < 1:
-            max_can_buy = 1
-        self.amount_spin.setMaximum(max_can_buy)
-        self.update_total()
+        main_layout.addLayout(slider_layout)
 
-    def update_total(self):
-        amount = self.amount_spin.value()
-        total = amount * 3600
-        self.total_price_label.setText(f"总计：{total} 信用点")
-        credit = self.get_inventory().get("credit", 0)
-        if total > credit:
-            self.total_price_label.setStyleSheet("font-size: 14px; color: #FF5555;")
+        # ---- 余额和总价 ----
+        info_bottom_layout = QVBoxLayout()
+        info_bottom_layout.setSpacing(5)
+
+        self.balance_label = QLabel()
+        self.balance_label.setStyleSheet("color: #AAAAAA; font-size: 14px;")
+        info_bottom_layout.addWidget(self.balance_label)
+
+        self.total_label = QLabel()
+        self.total_label.setStyleSheet("color: #FFD700; font-size: 16px; font-weight: bold;")
+        info_bottom_layout.addWidget(self.total_label)
+
+        main_layout.addLayout(info_bottom_layout)
+
+        # ---- 按钮 ----
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(20)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("cancel")
+        cancel_btn.clicked.connect(self.reject)
+
+        self.confirm_btn = QPushButton("确认购买")
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.clicked.connect(self.do_buy)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(self.confirm_btn)
+        main_layout.addLayout(btn_layout)
+
+    def on_slider_changed(self, value):
+        self.quantity_label.setText(f"兑换数量：{value}")
+        self.update_display(value)
+
+    def update_display(self, quantity=None):
+        if quantity is None:
+            quantity = self.slider.value()
+        total = quantity * self.price
+
+        self.balance_label.setText(f"当前 {self.currency_name}：{self.balance}")
+
+        if total > self.balance:
+            self.total_label.setStyleSheet("color: #FF5555; font-size: 16px; font-weight: bold;")
+            self.confirm_btn.setEnabled(False)
         else:
-            self.total_price_label.setStyleSheet("font-size: 14px; color: #AAAAAA;")
+            self.total_label.setStyleSheet("color: #FFD700; font-size: 16px; font-weight: bold;")
+            self.confirm_btn.setEnabled(quantity > 0 and self.max_quantity > 0)
 
-    def buy(self):
-        amount = self.amount_spin.value()
-        total_credit = amount * 3600
-        inv = self.get_inventory()
-        credit = inv.get("credit", 0)
-        if credit < total_credit:
-            QMessageBox.warning(self, "提示", f"信用点不足！需要 {total_credit} 信用点，当前拥有 {credit} 点。")
+        self.total_label.setText(f"总计：{total} {self.currency_name}")
+
+    def _on_inventory_updated(self):
+        """库存更新时刷新余额和滑块"""
+        self.inv = self._get_inventory()
+        if self.currency == "credit":
+            self.balance = self.inv.get('credit', 0)
+        else:
+            self.balance = self.inv.get('jade', 0)
+
+        max_possible = self.balance // self.price if self.price > 0 else 0
+        if max_possible >= 9999:
+            self.max_quantity = 9999
+        else:
+            self.max_quantity = max_possible
+
+        self.slider.setRange(0, self.max_quantity)
+        self.slider.setEnabled(self.max_quantity > 0)
+        if self.max_quantity < 1:
+            self.slider.setValue(0)
+            self.confirm_btn.setEnabled(False)
+        else:
+            # 若当前滑块值超过新上限，自动调低
+            if self.slider.value() > self.max_quantity:
+                self.slider.setValue(self.max_quantity)
+        self.update_display()
+
+    def do_buy(self):
+        quantity = self.slider.value()
+        if quantity <= 0:
+            QMessageBox.warning(self, "提示", "请选择至少 1 件商品")
             return
-        inv["credit"] = credit - total_credit
-        inv["balance"] = inv.get("balance", 0) + amount
 
+        total = quantity * self.price
+        if total > self.balance:
+            QMessageBox.warning(self, "提示", f"{self.currency_name}不足")
+            return
+
+        # 扣除货币
+        if self.currency == "credit":
+            self.inv['credit'] = self.balance - total
+        else:
+            self.inv['jade'] = self.balance - total
+
+        # 增加物品
+        item_type = self.item_data['item_type']
+        amount_per_unit = self.item_data.get('amount_per_unit', 1)
+        add_amount = quantity * amount_per_unit
+
+        item_desc = ""
+        if item_type == 'cake':
+            self.inv['balance'] = self.inv.get('balance', 0) + add_amount
+            item_desc = f"橡木蛋糕卷 x{add_amount}"
+            self.firefly.check_month_reset()
+            self.firefly.current_user['monthly_cake_gained'] = self.firefly.current_user.get('monthly_cake_gained', 0) + add_amount
+        elif item_type == 'star_rail_ticket':
+            self.inv['star_rail_tickets'] = self.inv.get('star_rail_tickets', 0) + add_amount
+            item_desc = f"星铁专票 x{add_amount}"
+            self.firefly.check_month_reset()
+            self.firefly.current_user['monthly_ticket_gained'] = self.firefly.current_user.get('monthly_ticket_gained', 0) + add_amount
+            self.firefly.current_user['total_ticket_gained'] = self.firefly.current_user.get('total_ticket_gained', 0) + add_amount
+        else:
+            QMessageBox.warning(self, "错误", f"未知商品类型：{item_type}")
+            return
+
+        # 保存存档并通知库存更新
         if self.firefly.mp_client.connected and self.firefly.online_inventory is not None:
-            self.firefly.mp_client._send(
-                {'type': 'save_inventory', 'data': {'inventory': self.firefly.online_inventory}})
+            self.firefly.mp_client._send({'type': 'save_inventory', 'data': {'inventory': self.firefly.online_inventory}})
         else:
             self.firefly._save_current_user()
 
-        # === 新增统计 ===
-        self.firefly.check_month_reset()
-        self.firefly.current_user["monthly_cake_gained"] += amount
+        # 通知库存更新（触发所有窗口刷新）
+        self.firefly.notify_inventory_updated()
+
+        # 记录历史
+        history = self.firefly.current_user.get('redeem_history', [])
+        history.append(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - 商店购买 {self.item_data['name']} x{quantity}，花费 {total} {self.currency_name}（获得 {item_desc}）"
+        )
+        self.firefly.current_user['redeem_history'] = history
         self.firefly._save_current_user()
 
-        history = self.firefly.current_user.get("redeem_history", [])
-        history.append(
-            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - 商店购买 {amount} 个橡木蛋糕卷，花费 {total_credit} 信用点")
-        self.firefly.current_user["redeem_history"] = history
-        if not self.firefly.mp_client.connected:
-            self.firefly._save_current_user()
-
-        QMessageBox.information(self, "成功", f"购买成功！获得 {amount} 个橡木蛋糕卷，剩余信用点：{inv['credit']}")
-        self.accept()
         self.firefly.update_bag_display()
 
+        QMessageBox.information(self, "购买成功", f"成功购买 {self.item_data['name']} x{quantity}！")
+        self.accept()
 
 # ====================== 重置密码窗口 ======================
 class ResetPasswordWindow(QDialog):
@@ -1945,10 +3159,14 @@ class RegisterWindow(QDialog):
         for filename in os.listdir(USER_DATA_DIR):
             if filename.endswith(".json"):
                 filepath = os.path.join(USER_DATA_DIR, filename)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if "uid" in data:
-                        existing_uids.add(data["uid"])
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if "uid" in data:
+                            existing_uids.add(data["uid"])
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    # 跳过损坏或无法读取的文件
+                    continue
         while True:
             rand_num = str(random.randint(0, 10 ** 9 - 1)).zfill(9)
             uid_candidate = f"user-{rand_num}"
@@ -2212,17 +3430,8 @@ class LoginWindow(QDialog):
             for filename in os.listdir(USER_DATA_DIR):
                 if filename.endswith(".json") and filename != os.path.basename(CODES_FILE):
                     filepath = os.path.join(USER_DATA_DIR, filename)
-                    try:
-                        with open(filepath, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        with open(log_path, 'a') as log:
-                            log.write(f"跳过损坏文件 {filename}: {e}\n")
-                        continue
-                    # 关键修复：只处理字典格式的数据
-                    if not isinstance(data, dict):
-                        with open(log_path, 'a') as log:
-                            log.write(f"跳过非字典文件 {filename}, 类型: {type(data)}\n")
+                    data = safe_load_json_with_recovery(filepath)
+                    if data is None:
                         continue
                     if data.get("username") == key or data.get("userid") == key:
                         found_user = data
@@ -2276,35 +3485,6 @@ class LoginWindow(QDialog):
             with open(log_path, 'a') as log:
                 log.write(f"登录过程未捕获异常: {e}\n{traceback.format_exc()}\n")
             QMessageBox.critical(self, "严重错误", f"登录时发生未知错误：{str(e)}\n详情已写入 {log_path}")
-
-class GlobalHotkeyFilter(QAbstractNativeEventFilter):
-    def __init__(self, firefly):
-        super().__init__()
-        self.firefly = firefly
-        # 注册全局热键 Ctrl+Tab（避免与系统 Tab 冲突，改用 Ctrl+Tab，可自行调整为纯 Tab）
-        self.id = 1
-        ctypes.windll.user32.RegisterHotKey(None, self.id, MOD_CONTROL | MOD_NOREPEAT, VK_TAB)
-
-    def nativeEventFilter(self, eventType, message):
-        # 防御性检查：如果 message 为 None，直接返回未处理
-        if message is None:
-            return False, 0
-        try:
-            # 将消息指针转换为整数，再构造 MSG 结构
-            msg_ptr = int(message)
-            msg = ctypes.wintypes.MSG.from_address(msg_ptr)
-            if msg.message == WM_HOTKEY and msg.wParam == self.id:
-                if self.firefly.mp_client.connected:
-                    self.firefly.toggle_online_list()
-                return True, 0
-        except Exception as e:
-            # 记录异常但继续运行，避免程序崩溃
-            print(f"[热键] 处理消息异常: {e}")
-        # 默认返回未处理
-        return False, 0
-
-    def unregister(self):
-        ctypes.windll.user32.UnregisterHotKey(None, self.id)
 
 class ChangeNameDialog(QDialog):
     def __init__(self, parent=None, current_name="", remaining_changes=1, server_timezone_offset=0):
@@ -2659,85 +3839,129 @@ class DirectJoinDialog(QDialog):
         self.join_request.emit(host, port)
         self.accept()
 
+class ServerItemWidget(QWidget):
+    """自定义列表项，显示服务器名称、地址、状态（延迟/在线人数）"""
+    def __init__(self, name, ip, port, server_type, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.ip = ip
+        self.port = port
+        self.server_type = server_type
+        self._status = "检测中..."
+        self._latency = "--"
+        self._online = "--"
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)   # 稍微增加上下内边距
+        layout.setSpacing(15)
+
+        # 名称（左对齐）— 字体加大
+        self.name_label = QLabel(name)
+        self.name_label.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 16px;")
+        layout.addWidget(self.name_label, 2)
+
+        # 地址（小字，但也要稍大）
+        self.addr_label = QLabel(f"{ip}:{port}")
+        self.addr_label.setStyleSheet("color: #888888; font-size: 13px;")
+        layout.addWidget(self.addr_label, 1)
+
+        # 状态图标
+        self.status_icon = QLabel("⏳")
+        self.status_icon.setAlignment(Qt.AlignCenter)
+        self.status_icon.setFixedWidth(30)
+        self.status_icon.setStyleSheet("font-size: 18px;")   # 图标大一点
+        layout.addWidget(self.status_icon)
+
+        # 延迟
+        self.latency_label = QLabel("延迟：--")
+        self.latency_label.setStyleSheet("color: #AAAAAA; font-size: 13px;")
+        self.latency_label.setFixedWidth(110)
+        layout.addWidget(self.latency_label)
+
+        # 在线人数
+        self.online_label = QLabel("在线：--")
+        self.online_label.setStyleSheet("color: #AAAAAA; font-size: 13px;")
+        self.online_label.setFixedWidth(110)
+        layout.addWidget(self.online_label)
+
+        self.setStyleSheet("background: transparent;")
+
+    # 其余方法 (update_status, set_checking) 保持不变
+    def update_status(self, latency, online, max_):
+        if sip.isdeleted(self):
+            return
+        if latency is not None:
+            self._latency = f"{latency} ms"
+            if latency <= 40:
+                icon = "🟢"
+            elif latency <= 120:
+                icon = "🟡"
+            else:
+                icon = "🔴"
+        else:
+            self._latency = "超时"
+            icon = "❌"
+        self.status_icon.setText(icon)
+        self.latency_label.setText(f"延迟：{self._latency}")
+        if online is not None and max_ is not None:
+            self.online_label.setText(f"在线：{online}/{max_}")
+        else:
+            self.online_label.setText("在线：不可达")
+        self._status = "已检测"
+
+    def set_checking(self):
+        if sip.isdeleted(self):
+            return
+        self.status_icon.setText("⏳")
+        self.latency_label.setText("延迟：检测中")
+        self.online_label.setText("在线：检测中")
+        self._status = "检测中"
+
+
 class JoinServerDialog(QDialog):
-    """服务器选择与加入对话框（支持扫描、自定义、快速加入）"""
+    """服务器选择与加入对话框（单列表，内嵌状态显示）"""
     scan_finished = pyqtSignal(dict, bool)
 
     def __init__(self, firefly, parent=None):
         super().__init__(parent)
-        self.firefly = firefly  # 保存 Firefly 实例引用，用于直接加入
+        self.firefly = firefly
         set_window_emoji_icon(self, "🌐")
         self.setWindowTitle("加入服务器")
-        self.setFixedSize(700, 500)
+        # 增大 1.5 倍（原 700x500 → 1050x750）
+        self.setFixedSize(1050, 750)
         self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("""
             QDialog { background-color: #1E1E1E; border-radius: 10px; }
             QLabel { color: #CCCCCC; font-size: 13px; }
-            QLineEdit { background-color: #2D2D2D; color: white; border:1px solid #555; border-radius:5px; padding:6px; }
-            QLineEdit:focus { border-color: #4CAF50; }
             QPushButton { background-color: #4CAF50; color: white; border:none; border-radius:5px; padding:6px 16px; }
             QPushButton:hover { background-color: #45A049; }
-            QPushButton:disabled { background-color: #666666; }
+            QPushButton:disabled { background-color: #666666; color: #AAAAAA; }
             QListWidget { background-color: #2D2D2D; color: white; border:1px solid #555; border-radius:5px; padding:4px; }
+            QListWidget::item { padding: 0px; }
         """)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
 
-        # ========== 左侧：列表 + 手动输入行 ==========
+        # 左侧：列表
         left_layout = QVBoxLayout()
         left_layout.setSpacing(10)
 
         self.server_list = QListWidget()
-        self.server_list.itemDoubleClicked.connect(self.join_selected)
+        self.server_list.itemDoubleClicked.connect(self.join_selected_item)
         left_layout.addWidget(self.server_list)
 
-        # 手动输入行
-        addr_layout = QHBoxLayout()
-        addr_layout.addWidget(QLabel("地址："))
-        self.addr_edit = QLineEdit()
-        self.addr_edit.setPlaceholderText("IP:端口")
-        self.addr_edit.setText("")
-        addr_layout.addWidget(self.addr_edit)
-        left_layout.addLayout(addr_layout)
+        main_layout.addLayout(left_layout, 3)
 
-        # 底部按钮（加入、取消）
-        btn_layout = QHBoxLayout()
-        self.join_btn = QPushButton("加入")
-        self.join_btn.clicked.connect(self.join_selected)
-        cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(self.join_btn)
-        btn_layout.addWidget(cancel_btn)
-        left_layout.addLayout(btn_layout)
-
-        main_layout.addLayout(left_layout, 2)
-
-        # ========== 右侧：控制面板 ==========
+        # 右侧：控制面板
         right_layout = QVBoxLayout()
         right_layout.setSpacing(15)
 
-        # 扫描按钮
         self.scan_btn = QPushButton("🔍 扫描局域网")
         self.scan_btn.clicked.connect(self.scan_lan)
         right_layout.addWidget(self.scan_btn)
 
-        # 信号图标 + 延迟信息
-        info_layout = QHBoxLayout()
-        self.signal_label = QLabel("📶")
-        self.signal_label.setAlignment(Qt.AlignCenter)
-        self.signal_label.setStyleSheet("font-size: 24px;")
-        info_layout.addWidget(self.signal_label)
-
-        self.latency_label = QLabel("延迟：--")
-        self.latency_label.setAlignment(Qt.AlignCenter)
-        self.latency_label.setStyleSheet("color: #CCCCCC; font-size: 13px;")
-        self.latency_label.setMinimumWidth(100)
-        info_layout.addWidget(self.latency_label)
-        right_layout.addLayout(info_layout)
-
-        # 直接加入按钮（快速）
         self.direct_join_btn = QPushButton("🚀 直接加入")
         self.direct_join_btn.setStyleSheet("""
             QPushButton {
@@ -2745,7 +3969,7 @@ class JoinServerDialog(QDialog):
                 color: white;
                 font-weight: bold;
                 padding: 8px;
-                font-size: 14px;
+                font-size: 16px;
             }
             QPushButton:hover {
                 background-color: #F57C00;
@@ -2754,23 +3978,60 @@ class JoinServerDialog(QDialog):
         self.direct_join_btn.clicked.connect(self.open_direct_join_dialog)
         right_layout.addWidget(self.direct_join_btn)
 
-        # 添加服务器按钮
         add_btn = QPushButton("➕ 添加服务器")
         add_btn.clicked.connect(self.add_custom_server)
         right_layout.addWidget(add_btn)
 
-        # 编辑服务器按钮
-        edit_btn = QPushButton("✏️ 编辑选中")
-        edit_btn.clicked.connect(self.edit_selected_server)
-        right_layout.addWidget(edit_btn)
+        edit_delete_layout = QHBoxLayout()
+        self.edit_btn = QPushButton("✏️ 编辑选中")
+        self.edit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 6px 16px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #666666;
+                color: #AAAAAA;
+            }
+        """)
+        self.edit_btn.clicked.connect(self.edit_selected_server)
+        self.edit_btn.setEnabled(False)
+        edit_delete_layout.addWidget(self.edit_btn)
 
+        self.delete_btn = QPushButton("🗑️ 删除")
+        self.delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #D32F2F;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 6px 16px;
+            }
+            QPushButton:hover {
+                background-color: #F44336;
+            }
+            QPushButton:disabled {
+                background-color: #666666;
+                color: #AAAAAA;
+            }
+        """)
+        self.delete_btn.clicked.connect(self.delete_selected_server)
+        self.delete_btn.setEnabled(False)
+        edit_delete_layout.addWidget(self.delete_btn)
+
+        right_layout.addLayout(edit_delete_layout)
         right_layout.addStretch()
         main_layout.addLayout(right_layout, 1)
 
         # 数据
         self.found_servers = []
         self.custom_servers = []
-        self.last_latency = "--"
         self.scan_finished.connect(self.on_scan_finished)
 
         self.load_custom_servers()
@@ -2778,21 +4039,47 @@ class JoinServerDialog(QDialog):
         self.center_on_screen()
         QTimer.singleShot(100, self.scan_lan)
 
-    # ---------- 窗口辅助方法 ----------
     def center_on_screen(self):
         screen_center = QApplication.primaryScreen().availableGeometry().center()
         self.move(screen_center - self.rect().center())
 
-    # ---------- 自定义服务器持久化 ----------
+    # ---------- 持久化 ----------
     def load_custom_servers(self):
         path = os.path.join(USER_DATA_DIR, 'custom_servers.json')
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    self.custom_servers = json.load(f)
-            except:
-                self.custom_servers = []
-        else:
+        self.custom_servers = []  # 默认值
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return
+
+            # 修复旧格式：将字符串元素转换为字典
+            fixed = []
+            needs_fix = False
+            for item in data:
+                if isinstance(item, str):
+                    # 旧格式：只有名称，使用默认 IP 和端口（或从已有服务器中获取？）
+                    # 最简单：给一个占位符，用户可以通过编辑按钮修正
+                    fixed.append({'name': item, 'ip': '127.0.0.1', 'port': 20082})
+                    needs_fix = True
+                elif isinstance(item, dict) and 'name' in item:
+                    # 确保有 ip 和 port 字段
+                    item.setdefault('ip', '127.0.0.1')
+                    item.setdefault('port', 20082)
+                    fixed.append(item)
+                else:
+                    # 未知格式，忽略
+                    continue
+            self.custom_servers = fixed
+
+            # 如果修复了数据，立即保存回文件，避免下次再次修复
+            if needs_fix:
+                self.save_custom_servers()
+        except Exception as e:
+            print(f"[加载自定义服务器] 错误: {e}")
             self.custom_servers = []
 
     def save_custom_servers(self):
@@ -2802,70 +4089,106 @@ class JoinServerDialog(QDialog):
 
     def refresh_list(self):
         self.server_list.clear()
-        for srv in self.custom_servers:
-            name = srv.get('name', '自定义')
-            text = f"⭐ {name} - {srv['ip']}:{srv['port']}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, ('custom', self.custom_servers.index(srv)))
+        # 自定义服务器
+        for idx, srv in enumerate(self.custom_servers):
+            name = f"⭐ {srv.get('name', '自定义')}"
+            widget = ServerItemWidget(name, srv['ip'], srv['port'], 'custom')
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, ('custom', idx))
+            item.setSizeHint(widget.sizeHint())
             self.server_list.addItem(item)
+            self.server_list.setItemWidget(item, widget)
+            # 启动状态检测
+            self._check_server_status(widget, srv['ip'], srv['port'])
+
+        # 局域网服务器
         for i, srv in enumerate(self.found_servers):
-            name = srv.get('name', '服务器')
-            text = f"📡 {name} - {srv['ip']}:{srv['port']}"
-            item = QListWidgetItem(text)
+            name = f"📡 {srv.get('name', '服务器')}"
+            widget = ServerItemWidget(name, srv['ip'], srv['port'], 'found')
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, ('found', i))
+            item.setSizeHint(widget.sizeHint())
             self.server_list.addItem(item)
+            self.server_list.setItemWidget(item, widget)
+            self._check_server_status(widget, srv['ip'], srv['port'])
 
-    # ---------- 加入服务器 ----------
-    def get_address(self):
-        text = self.addr_edit.text().strip()
-        # 处理中文冒号
-        text = text.replace('：', ':')
-        if ':' in text:
-            host, port = text.split(':', 1)
-            return host, int(port)
-        return text, 20082
+        # 默认选中第一项
+        if self.server_list.count() > 0:
+            self.server_list.setCurrentRow(0)
+        self.update_button_state()
 
-    def join_selected(self):
-        row = self.server_list.currentRow()
-        if row >= 0:
-            item = self.server_list.item(row)
-            tag, index = item.data(Qt.UserRole)
-            if tag == 'found' and 0 <= index < len(self.found_servers):
-                srv = self.found_servers[index]
-                addr = f"{srv['ip']}:{srv['port']}"
-                self.addr_edit.setText(addr)
-                self.save_last_addr(addr)
-                self.accept()
-                return
-            elif tag == 'custom' and 0 <= index < len(self.custom_servers):
-                srv = self.custom_servers[index]
-                addr = f"{srv['ip']}:{srv['port']}"
-                self.addr_edit.setText(addr)
-                self.save_last_addr(addr)
-                self.accept()
-                return
-        addr = self.addr_edit.text().strip()
-        if addr:
-            self.save_last_addr(addr)
-            self.accept()
+    def update_button_state(self):
+        """根据当前选中项更新编辑/删除按钮状态"""
+        item = self.server_list.currentItem()
+        if item:
+            tag, _ = item.data(Qt.UserRole)
+            enable = (tag == 'custom')
+        else:
+            enable = False
+        self.edit_btn.setEnabled(enable)
+        self.delete_btn.setEnabled(enable)
 
-    def load_last_addr(self):
-        path = os.path.join(USER_DATA_DIR, 'server_ip.json')
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    return json.load(f).get('addr', '')
-            except:
-                pass
-        return ''
+    # ---------- 状态检测（异步） ----------
+    def _check_server_status(self, widget, ip, port):
+        """启动一个线程检测服务器状态，完成后更新 widget"""
+        def check():
+            online, max_, latency = self.query_server_status(ip, port)
+            # 在主线程更新 UI
+            QMetaObject.invokeMethod(self, "_update_widget_status",
+                                     Qt.QueuedConnection,
+                                     Q_ARG(object, widget),
+                                     Q_ARG(object, latency),
+                                     Q_ARG(object, online),
+                                     Q_ARG(object, max_))
+        threading.Thread(target=check, daemon=True).start()
 
-    def save_last_addr(self, addr):
-        path = os.path.join(USER_DATA_DIR, 'server_ip.json')
+    @pyqtSlot(object, object, object, object)
+    def _update_widget_status(self, widget, latency, online, max_):
+        """槽函数：更新 widget 状态（主线程执行）"""
         try:
-            with open(path, 'w') as f:
-                json.dump({'addr': addr}, f)
-        except:
-            pass
+            if not sip.isdeleted(widget):
+                widget.update_status(latency, online, max_)
+        except RuntimeError:
+            pass  # widget 已被删除
+
+    def query_server_status(self, ip, port, timeout=0.8):
+        """查询服务器状态，返回 (online, max, latency_ms)"""
+        start = time.time()
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            req = json.dumps({'type': 'status'}) + '\n'
+            sock.sendall(req.encode())
+            data = sock.recv(1024)
+            sock.close()
+            elapsed = int((time.time() - start) * 1000)
+            lines = data.decode('utf-8').strip().split('\n')
+            for line in lines:
+                if not line:
+                    continue
+                resp = json.loads(line)
+                if resp.get('type') == 'status_response':
+                    d = resp.get('data', {})
+                    online = d.get('online')
+                    max_ = d.get('max')
+                    if online is not None and max_ is not None:
+                        return online, max_, elapsed
+            return None, None, elapsed
+        except Exception:
+            return None, None, None
+
+    # ---------- 加入功能 ----------
+    def join_selected_item(self, item):
+        tag, index = item.data(Qt.UserRole)
+        if tag == 'custom' and 0 <= index < len(self.custom_servers):
+            srv = self.custom_servers[index]
+            self.firefly.join_server(srv['ip'], srv['port'])
+            self.accept()
+        elif tag == 'found' and 0 <= index < len(self.found_servers):
+            srv = self.found_servers[index]
+            self.firefly.join_server(srv['ip'], srv['port'])
+            self.accept()
 
     # ---------- 自定义服务器操作 ----------
     def add_custom_server(self):
@@ -2875,53 +4198,105 @@ class JoinServerDialog(QDialog):
             self.custom_servers.append({'name': name, 'ip': host, 'port': port})
             self.save_custom_servers()
             self.refresh_list()
+            # 选中新添加的
+            idx = len(self.custom_servers) - 1
+            self.server_list.setCurrentRow(idx)
+            self.update_button_state()
 
     def edit_selected_server(self):
-        row = self.server_list.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "提示", "请先选中一个服务器")
+        item = self.server_list.currentItem()
+        if not item:
             return
-        item = self.server_list.item(row)
         tag, index = item.data(Qt.UserRole)
-        if tag != 'custom':
-            QMessageBox.warning(self, "提示", "只能编辑手动添加的服务器")
+        if tag != 'custom' or not (0 <= index < len(self.custom_servers)):
             return
-        if 0 <= index < len(self.custom_servers):
-            srv = self.custom_servers[index]
-            dlg = AddServerDialog(self, name=srv.get('name', ''), addr=f"{srv['ip']}:{srv['port']}")
-            if dlg.exec_() == QDialog.Accepted:
-                name, host, port = dlg.get_server_info()
-                self.custom_servers[index] = {'name': name, 'ip': host, 'port': port}
-                self.save_custom_servers()
-                self.refresh_list()
+        srv = self.custom_servers[index]
+        dlg = AddServerDialog(self, name=srv.get('name', ''), addr=f"{srv['ip']}:{srv['port']}")
+        if dlg.exec_() == QDialog.Accepted:
+            name, host, port = dlg.get_server_info()
+            self.custom_servers[index] = {'name': name, 'ip': host, 'port': port}
+            self.save_custom_servers()
+            self.refresh_list()
+            self.server_list.setCurrentRow(index)
+            self.update_button_state()
 
-    # ---------- 局域网扫描 ----------
+    def delete_selected_server(self):
+        item = self.server_list.currentItem()
+        if not item:
+            return
+        tag, index = item.data(Qt.UserRole)
+        if tag != 'custom' or not (0 <= index < len(self.custom_servers)):
+            return
+        srv = self.custom_servers[index]
+        name = srv.get('name', '未命名')
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("确认删除")
+        msg_box.setText(f"确定要删除自定义服务器「{name}」吗？")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+            }
+            QMessageBox QLabel {
+                color: #E0E0E0;
+                background-color: #1E1E1E;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #666;
+            }
+            QPushButton[text="No"] {
+                background-color: #666666;
+            }
+            QPushButton[text="No"]:hover {
+                background-color: #888888;
+            }
+        """)
+        parent_geo = self.geometry()
+        x = parent_geo.x() + (parent_geo.width() - msg_box.width()) // 2
+        y = parent_geo.y() + (parent_geo.height() - msg_box.height()) // 2
+        msg_box.move(x, y)
+        reply = msg_box.exec_()
+        if reply == QMessageBox.Yes:
+            del self.custom_servers[index]
+            self.save_custom_servers()
+            self.refresh_list()
+            self.update_button_state()
+
+    # ---------- 扫描局域网 ----------
     def scan_lan(self):
-        self.server_list.clear()
         self.found_servers.clear()
         self.scan_btn.setEnabled(False)
-        self.latency_label.setText("正在扫描...")
-        self.signal_label.setText("📶")
         self.repaint()
         threading.Thread(target=self._do_scan, daemon=True).start()
 
     def _do_scan(self):
         discovered = {}
         local_found = False
-        self.last_latency = "--"
-
-        # 测试本地服务器
         t0 = time.time()
         local_ok = self._check_port('127.0.0.1', 20082, timeout=1.0)
-        t1 = time.time()
         if local_ok:
-            discovered['127.0.0.1:20082'] = {'ip': '127.0.0.1', 'port': 20082, 'name': '本地服务器'}
+            online, max_ = self.get_server_status('127.0.0.1', 20082)
+            discovered['127.0.0.1:20082'] = {
+                'ip': '127.0.0.1',
+                'port': 20082,
+                'name': '本地服务器',
+                'online': online,
+                'max': max_
+            }
             local_found = True
-            self.last_latency = f"{int((t1 - t0) * 1000)}ms"
-        else:
-            self.last_latency = "无响应"
-
-        # 扫描局域网
         local_ip = self._get_local_ip()
         if local_ip:
             base = '.'.join(local_ip.split('.')[:3])
@@ -2934,7 +4309,6 @@ class JoinServerDialog(QDialog):
                 threads.append(t)
             for t in threads:
                 t.join(timeout=2.0)
-
         self.scan_finished.emit(discovered, local_found)
 
     def _check_port(self, ip, port, timeout=0.5):
@@ -2949,8 +4323,15 @@ class JoinServerDialog(QDialog):
 
     def _scan_ip(self, ip, port, result_dict, lock):
         if self._check_port(ip, port):
+            online, max_ = self.get_server_status(ip, port)
             with lock:
-                result_dict[f"{ip}:{port}"] = {'ip': ip, 'port': port, 'name': '局域网服务器'}
+                result_dict[f"{ip}:{port}"] = {
+                    'ip': ip,
+                    'port': port,
+                    'name': '局域网服务器',
+                    'online': online,
+                    'max': max_
+                }
 
     def _get_local_ip(self):
         try:
@@ -2964,33 +4345,170 @@ class JoinServerDialog(QDialog):
         except:
             return None
 
+    def get_server_status(self, ip, port, timeout=0.8):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((ip, port))
+            req = json.dumps({'type': 'status'}) + '\n'
+            sock.sendall(req.encode())
+            data = sock.recv(1024)
+            sock.close()
+            lines = data.decode('utf-8').strip().split('\n')
+            for line in lines:
+                if not line:
+                    continue
+                resp = json.loads(line)
+                if resp.get('type') == 'status_response':
+                    d = resp.get('data', {})
+                    online = d.get('online')
+                    max_ = d.get('max')
+                    if online is not None and max_ is not None:
+                        return online, max_
+            return None, None
+        except Exception:
+            return None, None
+
     def on_scan_finished(self, discovered, local_found):
         self.found_servers = list(discovered.values())
         self.refresh_list()
         self.scan_btn.setEnabled(True)
+        if self.server_list.count() > 0:
+            self.server_list.setCurrentRow(0)
+            self.update_button_state()
 
-        # 更新延迟显示和信号图标
-        self.latency_label.setText(self.last_latency)
-        if not self.found_servers and not self.custom_servers:
-            self.latency_label.setText("无服务器")
-            self.signal_label.setText("❌")
-        else:
-            if local_found:
-                self.signal_label.setText("📶")
-            else:
-                self.signal_label.setText("⚠️")
-
-    # ---------- 直接加入功能 ----------
+    # ---------- 直接加入 ----------
     def open_direct_join_dialog(self):
-        """弹出快速加入对话框"""
         dlg = DirectJoinDialog(self)
         dlg.join_request.connect(self._on_direct_join)
         dlg.exec_()
 
     def _on_direct_join(self, host, port):
-        """直接加入服务器，关闭对话框"""
         self.firefly.join_server(host, port)
         self.accept()
+
+
+class PlayerListDialog(QDialog):
+    def __init__(self, firefly, players=None, parent=None):
+        super().__init__(parent)
+        self.firefly = firefly
+        self.setWindowTitle("当前在线玩家")
+        self.setMinimumSize(450, 350)
+        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1E1E1E;
+                border-radius: 12px;
+            }
+            QTableWidget {
+                background-color: #2D2D2D;
+                color: #E0E0E0;
+                border: 1px solid #555;
+                border-radius: 6px;
+                gridline-color: #444;
+                font-size: 14px;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 6px;
+            }
+            QHeaderView::section {
+                background-color: #3A3A3A;
+                color: #FFFFFF;
+                padding: 8px;
+                border: 1px solid #555;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QHeaderView::section:hover {
+                background-color: #4A4A4A;
+            }
+            QTableWidget QTableCornerButton::section {
+                background-color: #3A3A3A;
+            }
+            QLabel {
+                color: #CCCCCC;
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 20px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+        """)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["名字", "延迟"])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(False)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(True)
+        # 确保滚动条在需要时显示（默认已启用，显式声明更安全）
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        self.title_label = QLabel("当前在线玩家 (0人)")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #FFFFFF;")
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.table)
+
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close, alignment=Qt.AlignCenter)
+
+        self.firefly.mp_client.online_list_updated.connect(self.update_players)
+        if players is not None:
+            self.update_players(players)
+
+        # 恢复到原来的屏幕居中（不依赖父窗口）
+        screen_center = QApplication.primaryScreen().availableGeometry().center()
+        self.move(screen_center - self.rect().center())
+
+    def update_players(self, players):
+        self.table.setRowCount(len(players))
+        global_latency = self.firefly.mp_client._latest_latency_ms
+        for row, p in enumerate(players):
+            name = p.get('name', '未知')
+            latency = p.get('latency')
+            if latency is None:
+                if global_latency >= 0:
+                    latency_text = f"{global_latency} ms"
+                else:
+                    latency_text = "未知"
+            else:
+                latency_text = f"{latency} ms"
+            self.table.setItem(row, 0, QTableWidgetItem(name))
+            self.table.setItem(row, 1, QTableWidgetItem(latency_text))
+        # 调整列宽：第二列自适应内容，第一列自动填充
+        self.table.horizontalHeader().resizeSection(1, self.table.columnWidth(1))
+        # 但 Stretch 会覆盖，所以无需额外操作
+
+        count = len(players)
+        self.setWindowTitle(f"当前在线玩家 ({count}人)")
+        self.title_label.setText(f"当前在线玩家 ({count}人)")
+
+    def closeEvent(self, event):
+        try:
+            self.firefly.mp_client.online_list_updated.disconnect(self.update_players)
+        except TypeError:
+            pass
+        event.accept()
 
 class OnlineListOverlay(QFrame):
     def __init__(self, firefly, parent=None):
@@ -3614,9 +5132,12 @@ class ChatWindow(QDialog):
 
 # -------------------------- 核心桌宠类 --------------------------
 class Firefly(QWidget):
+    website_check_done = pyqtSignal(bool, str)
     def __init__(self, user_data=None, parent=None):
         super(Firefly, self).__init__(parent)
         self.current_user = user_data
+        self.is_debugger = self.current_user.get('userid') == 'debugger' if self.current_user else False
+        self.debug_mode = os.environ.get('FIREFLY_DEBUG_MODE', 'off') == 'on'
         self.online_name = None
         self.label = QLabel("", self)
         self.label.setAlignment(Qt.AlignCenter)
@@ -3678,6 +5199,7 @@ class Firefly(QWidget):
         self.emo_check_timer.timeout.connect(self.check_emo)
         self.emo_check_timer.start(1000)
         self.mp_client = MultiplayerClient(self)  # 注意传入 self
+        self.shop_window = None  # 商店窗口引用
         self.mp_client.connection_changed.connect(self.on_mp_status_changed)
         self.mp_client.mentioned.connect(self.on_mentioned)
         self.mp_client.online_list_updated.connect(self.update_online_list_overlay)
@@ -3764,6 +5286,580 @@ class Firefly(QWidget):
         self._secret_timer.setInterval(1000)
         self._secret_timer.stop()
         self._secret_hovered = False
+        self._website_status = None
+        self._website_title = None
+        self.website_check_done.connect(self._on_website_check_done)
+        self._start_website_check()
+        # ---------- 服务端动态扩展 ----------
+        self.server_custom_menu = []  # 服务端下发的菜单项
+        self.server_custom_items = []  # 服务端下发的背包物品
+        self._auto_download_resources = False  # 用户偏好：是否自动下载（可从配置文件读取）
+        self._load_auto_download_pref()
+        self._current_gacha_bridge = None
+        QWebEngineProfile.defaultProfile()
+        self.server_resource_dir = os.path.join(os.path.dirname(sys.argv[0]), "server_resources")
+        os.makedirs(self.server_resource_dir, exist_ok=True)
+        self.cache_dir = os.path.join(os.path.dirname(sys.argv[0]), "web_cache_gacha")
+        self.inventory_updated = pyqtSignal()
+        self.debug_mode = os.environ.get('FIREFLY_DEBUG_MODE', 'off') == 'on'
+        self.online_player_count = 0
+        self.max_players = None
+        self._is_kicked = False
+        self._kick_pending = False
+
+    def center_window(self, window, parent=None, screen_center=True):
+        """
+        将窗口居中于屏幕或父窗口（支持多显示器，对 QMessageBox 不调整尺寸）。
+        """
+        # 1. 获取窗口预期尺寸（不实际调整）
+        if isinstance(window, QMessageBox):
+            # 使用 sizeHint 获取合理尺寸，不调用 adjustSize
+            hint = window.sizeHint()
+            if hint.isValid() and hint.width() > 0 and hint.height() > 0:
+                win_width, win_height = hint.width(), hint.height()
+            else:
+                # 兜底默认尺寸（QMessageBox 通常不会为空）
+                win_width, win_height = 400, 150
+        else:
+            if window.width() > 0 and window.height() > 0:
+                win_width, win_height = window.width(), window.height()
+            else:
+                hint = window.sizeHint()
+                if hint.isValid() and hint.width() > 0 and hint.height() > 0:
+                    win_width, win_height = hint.width(), hint.height()
+                else:
+                    # 对于自定义窗口，强制调整一次（不会频繁出现）
+                    window.adjustSize()
+                    win_width, win_height = window.width(), window.height()
+                    if win_width == 0 or win_height == 0:
+                        win_width, win_height = 400, 150
+
+        # 2. 获取当前屏幕（鼠标所在显示器）
+        cursor_pos = QCursor.pos()
+        screen = QApplication.screenAt(cursor_pos)
+        if not screen:
+            screen = window.screen() if window.screen() else QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry() if screen else QApplication.primaryScreen().availableGeometry()
+
+        if screen_center:
+            center = screen_geometry.center()
+            x = center.x() - win_width // 2
+            y = center.y() - win_height // 2
+            window.move(x, y)
+        else:
+            if parent is None:
+                parent = self
+            if parent and parent.isVisible():
+                parent_rect = parent.geometry()
+                x = parent_rect.x() + (parent_rect.width() - win_width) // 2
+                y = parent_rect.y() + (parent_rect.height() - win_height) // 2
+                # 确保不超出屏幕边界
+                x = max(screen_geometry.x(), min(screen_geometry.right() - win_width, x))
+                y = max(screen_geometry.y(), min(screen_geometry.bottom() - win_height, y))
+                window.move(x, y)
+            else:
+                center = screen_geometry.center()
+                window.move(center.x() - win_width // 2, center.y() - win_height // 2)
+
+    def show_player_list(self):
+        """打开成员列表对话框，如果已存在则激活"""
+        if hasattr(self, '_player_list_dialog') and self._player_list_dialog is not None:
+            try:
+                self._player_list_dialog.raise_()
+                self._player_list_dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._player_list_dialog = None
+
+        # 请求最新玩家列表
+        self.mp_client.request_player_list()
+        # 创建对话框（初始为空，稍后信号更新）
+        dlg = PlayerListDialog(self, players=[])
+        self._player_list_dialog = dlg
+        dlg.finished.connect(self._on_player_list_closed)
+        dlg.open()
+
+    def _on_player_list_closed(self):
+        """对话框关闭时清理引用"""
+        self._player_list_dialog = None
+
+    def _restart_app(self):
+        """保存当前状态并重启程序（保留用户登录状态）"""
+        # 保存当前状态和位置
+        if self.current_user:
+            self.current_user["last_state"] = self.persistent_state
+            pos = self.pos()
+            self.current_user["last_x"] = pos.x()
+            self.current_user["last_y"] = pos.y()
+            self._save_current_user()
+        # 断开服务器（可选）
+        self.disconnect_server()
+        # 获取重启命令
+        if getattr(sys, 'frozen', False):
+            program = sys.executable
+            args = []
+        else:
+            program = sys.executable
+            args = [os.path.abspath(sys.argv[0])]
+        if sys.platform == 'win32':
+            subprocess.Popen([program] + args,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+        else:
+            subprocess.Popen([program] + args, start_new_session=True)
+        QApplication.quit()
+        sys.exit(0)
+
+    def notify_inventory_updated(self):
+        self.inventory_updated.emit()
+
+    def _get_remaining_text(self, expiry):
+        """根据 expiry ISO 字符串返回剩余时间显示文本"""
+        if not expiry:
+            return ""
+        try:
+            dt = datetime.fromisoformat(expiry)
+            now = datetime.now(dt.tzinfo)
+            if now >= dt:
+                return " (已过期)"
+            delta = dt - now
+            days = delta.days
+            hours, rem = divmod(delta.seconds, 3600)
+            mins, secs = divmod(rem, 60)
+            if days > 0:
+                return f" (剩余 {days}天{hours}小时)"
+            elif hours > 0:
+                return f" (剩余 {hours}小时{mins}分)"
+            else:
+                if mins > 0:
+                    return f" (剩余 {mins}分{secs}秒)"
+                else:
+                    return f" (剩余 {secs}秒)"
+        except:
+            return ""
+
+    def _close_gacha_window(self):
+        """关闭抽卡窗口并清理桥接引用"""
+        if hasattr(self, 'gacha_view') and self.gacha_view:
+            try:
+                self.gacha_view.close()
+                self.gacha_view.deleteLater()  # 确保释放
+                self.gacha_view = None
+            except Exception as e:
+                print(f"[Gacha] 关闭窗口异常: {e}")
+        if hasattr(self, '_current_gacha_bridge'):
+            self._current_gacha_bridge = None
+        if hasattr(self, '_gacha_channel'):
+            self._gacha_channel = None
+
+    def _load_auto_download_pref(self):
+        """从本地文件读取自动下载偏好"""
+        pref_file = os.path.join(USER_DATA_DIR, "auto_download.json")
+        if os.path.exists(pref_file):
+            try:
+                with open(pref_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self._auto_download_resources = data.get('enabled', False)
+            except:
+                pass
+
+    def _save_auto_download_pref(self):
+        """保存自动下载偏好到本地文件"""
+        pref_file = os.path.join(USER_DATA_DIR, "auto_download.json")
+        try:
+            with open(pref_file, 'w', encoding='utf-8') as f:
+                json.dump({'enabled': self._auto_download_resources}, f)
+        except:
+            pass
+
+    def _resource_exists(self, menu_id):
+        """检查指定菜单项的资源是否已下载（存在同名文件夹或文件）"""
+        if not menu_id:
+            return False
+        path = os.path.join(self.server_resource_dir, menu_id)
+        return os.path.exists(path)
+
+    def _mark_resource_downloaded(self, menu_id):
+        """标记资源为已下载（创建文件夹作为标记）"""
+        if not menu_id:
+            return
+        path = os.path.join(self.server_resource_dir, menu_id)
+        os.makedirs(path, exist_ok=True)
+
+    def download_resource(self, menu_item):
+        url = menu_item.get('resource_url')
+        if not url:
+            return
+        menu_id = menu_item.get('id')
+        if not menu_id:
+            return
+
+        if url.startswith('/'):
+            host = getattr(self, 'server_host', '127.0.0.1')
+            port = getattr(self, 'server_web_port', 8080)
+            full_url = f"http://{host}:{port}{url}"
+        else:
+            full_url = url
+
+        local_zip = os.path.join(self.server_resource_dir, f"{menu_id}.zip")
+
+        progress = QProgressDialog(
+            f"正在下载: {menu_item.get('label', '资源包')}",
+            "取消",
+            0,
+            100,
+            self
+        )
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        # 居中
+        parent_geo = self.geometry()
+        x = parent_geo.x() + (parent_geo.width() - progress.width()) // 2
+        y = parent_geo.y() + (parent_geo.height() - progress.height()) // 2
+        progress.move(x, y)
+
+        # 深色样式
+        progress.setStyleSheet("""
+            QProgressDialog {
+                background-color: #2D2D2D;
+                color: #E0E0E0;
+                border: 1px solid #555;
+                border-radius: 6px;
+            }
+            QLabel {
+                color: #E0E0E0;
+                font-size: 13px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #666;
+            }
+            QProgressBar {
+                border: 1px solid #555;
+                border-radius: 4px;
+                background-color: #1E1E1E;
+                text-align: center;
+                color: #E0E0E0;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 4px;
+            }
+        """)
+        progress.show()
+
+        class CancelException(Exception):
+            pass
+
+        def report_hook(count, block_size, total_size):
+            if progress.wasCanceled():
+                raise CancelException("下载已取消")
+            if total_size > 0:
+                percent = min(100, int(count * block_size * 100 / total_size))
+                progress.setValue(percent)
+
+        try:
+            import zipfile
+            import shutil
+
+            urllib.request.urlretrieve(full_url, local_zip, reporthook=report_hook)
+
+            progress.setLabelText("正在解压...")
+            progress.setRange(0, 0)
+
+            extract_to = os.path.join(self.server_resource_dir, menu_id)
+            if os.path.exists(extract_to):
+                shutil.rmtree(extract_to)
+            os.makedirs(extract_to, exist_ok=True)
+
+            with zipfile.ZipFile(local_zip, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+
+            os.remove(local_zip)
+
+            progress.setRange(0, 100)
+            progress.setValue(100)
+
+            index_path = os.path.join(extract_to, 'index.html')
+            if not os.path.exists(index_path):
+                QMessageBox.warning(
+                    self,
+                    "资源包无效",
+                    f"资源包 {menu_item.get('label')} 中缺少 index.html 文件，请检查资源包内容。"
+                )
+                return
+
+            QMessageBox.information(
+                self,
+                "下载完成",
+                f"{menu_item.get('label')} 资源包已下载并解压"
+            )
+            self.create_menu()
+
+        except CancelException:
+            if os.path.exists(local_zip):
+                try:
+                    os.remove(local_zip)
+                except:
+                    pass
+            QMessageBox.information(self, "下载取消", "下载已取消。")
+
+        except urllib.error.URLError as e:
+            QMessageBox.warning(self, "下载失败", f"网络错误：{str(e)}")
+
+        except Exception as e:
+            QMessageBox.warning(self, "下载失败", str(e))
+
+        finally:
+            progress.close()
+
+    def check_missing_resources(self):
+        """登录后检查是否有需要下载的资源，弹窗询问（深色，居中）"""
+        missing = [item for item in self.server_custom_menu
+                   if item.get('resource_required') and not self._resource_exists(item.get('id'))]
+        if not missing:
+            return
+        if self._auto_download_resources:
+            for item in missing:
+                self.download_resource(item)
+            return
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("资源下载")
+        msg_box.setText(f"当前服务器 {self.server_display_name} 存在未下载的资源包。\n是否现在下载？")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.Yes)
+
+        check_box = QCheckBox("不再提醒自动下载")
+        msg_box.setCheckBox(check_box)
+
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+            }
+            QMessageBox QLabel {
+                color: #E0E0E0;
+                background-color: #1E1E1E;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #666;
+            }
+            QCheckBox {
+                color: #E0E0E0;
+                background-color: transparent;
+            }
+            QCheckBox::indicator {
+                border: 1px solid #555;
+                background-color: #2D2D2D;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4CAF50;
+            }
+        """)
+
+        parent_geo = self.geometry()
+        x = parent_geo.x() + (parent_geo.width() - msg_box.width()) // 2
+        y = parent_geo.y() + (parent_geo.height() - msg_box.height()) // 2
+        msg_box.move(x, y)
+
+        reply = msg_box.exec_()
+        if reply == QMessageBox.Yes:
+            for item in missing:
+                self.download_resource(item)
+            if check_box.isChecked():
+                self._auto_download_resources = True
+                self._save_auto_download_pref()
+
+    def _on_server_menu_clicked(self, item):
+        # ----- 检查有效期 -----
+        expiry = item.get('expiry')
+        if expiry:
+            try:
+                dt = datetime.fromisoformat(expiry)
+                if datetime.now(dt.tzinfo) >= dt:
+                    self.show_centered_message("提示", f"{item.get('label')} 已过期", QMessageBox.Warning)
+                    return
+            except:
+                pass
+        print(f"[菜单点击] item={item}")
+        itype = item.get('type')
+        data = item.get('data')
+        menu_id = item.get('id', '')
+
+        # ★ 类型缺失时直接报错
+        if not itype:
+            self.show_centered_message("错误", "菜单项类型无效", QMessageBox.Warning)
+            return
+
+        if itype == 'url':
+            webbrowser.open(data)
+
+        elif itype == 'gacha':
+            # 检查资源是否已下载
+            if not self._resource_exists(menu_id):
+                self.download_resource(item)
+                # 下载完成后自动打开
+                self._open_gacha_page(menu_id)
+            else:
+                self._open_gacha_page(menu_id)
+
+        elif itype == 'command':
+            if self.mp_client.connected:
+                self.mp_client.send_command(data)
+            else:
+                self.show_centered_message("提示", "未连接到服务器", QMessageBox.Warning)
+
+        elif itype == 'download':
+            if not self._resource_exists(menu_id):
+                self.download_resource(item)
+            else:
+                self.show_centered_message("提示", "资源已下载", QMessageBox.Information)
+
+        elif itype == 'action':
+            self.show_centered_message("服务器功能", f"执行 {item.get('label')}", QMessageBox.Information)
+
+        elif itype == 'html':
+            res_path = os.path.join(self.server_resource_dir, menu_id)
+            index_path = os.path.join(res_path, 'index.html')
+            if os.path.exists(index_path):
+                webbrowser.open(index_path)
+            else:
+                self.show_centered_message("错误", "资源未下载或缺少 index.html", QMessageBox.Warning)
+
+        elif itype == 'webview':
+            if data:
+                from PyQt5.QtWebEngineWidgets import QWebEngineView
+                from PyQt5.QtCore import QUrl
+                view = QWebEngineView()
+                view.setWindowTitle(item.get('label', '网页'))
+                view.load(QUrl(data))
+                view.page().runJavaScript("alert('页面JS已注入');")
+                view.resize(800, 600)
+                view.show()
+            else:
+                self.show_centered_message("错误", "无效的URL", QMessageBox.Warning)
+
+
+        elif itype == 'folder':
+
+            # ★ 增加 menu_id 校验，防止空路径误触
+
+            if not menu_id:
+                self.show_centered_message("错误", "无效的文件夹菜单", QMessageBox.Warning)
+
+                return
+
+            folder = os.path.join(self.server_resource_dir, menu_id)
+
+            if os.path.exists(folder):
+
+                if sys.platform == 'win32':
+
+                    os.startfile(folder)
+
+                else:
+
+                    subprocess.Popen(['open', folder])
+
+            else:
+
+                self.show_centered_message("错误", "文件夹不存在", QMessageBox.Warning)
+        else:
+            self.show_centered_message("提示", "未知菜单类型", QMessageBox.Warning)
+
+    def _create_server_menu_item(self, item):
+        label = item.get('label', '未知')
+        icon_type = item.get('icon_type', 'emoji')
+        icon_str = item.get('icon', '')
+        action = QAction(label, self)
+        if icon_type == 'emoji' and icon_str:
+            action.setText(f"{icon_str} {label}")
+        elif icon_type == 'image' and icon_str:
+            pixmap = self._load_image_from_server(icon_str)
+            if pixmap:
+                action.setIcon(QIcon(pixmap))
+        else:
+            # 默认给个图标（根据类型或标签）
+            default_icon = "📦"
+            if item.get('type') == 'gacha':
+                default_icon = "🎲"
+            elif item.get('type') == 'url':
+                default_icon = "🔗"
+            elif item.get('type') == 'html':
+                default_icon = "🌐"
+            action.setText(f"{default_icon} {label}")
+        action.setToolTip(item.get('tooltip', ''))
+        return action
+
+    def _start_website_check(self):
+        import threading
+        def check():
+            title = None
+            status = False
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    'https://blog.mar7th.cn/?ref=23550',
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.getcode() == 200:
+                            status = True
+                            content = resp.read().decode('utf-8', errors='ignore')
+                            import re
+                            match = re.search(r'<h1[^>]*>(.*?)</h1>', content, re.IGNORECASE | re.DOTALL)
+                            title = match.group(1).strip() if match else "公测已延期"
+                        else:
+                            status = False
+                            title = f"状态码 {resp.getcode()}"
+                except urllib.error.HTTPError as e:
+                    print(f"[网站检测] HTTPError: {e.code} {e.reason}")
+                    # 重定向视为网站可用（实际浏览器能访问）
+                    if e.code in (301, 302, 303, 307, 308):
+                        status = True
+                        title = "小三月日记"
+                    else:
+                        status = False
+                        title = f"HTTP {e.code}"
+            except Exception as e:
+                print(f"[网站检测] 异常: {e}")
+                status = False
+                title = "异常"
+            self.website_check_done.emit(status, title)
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _on_website_check_done(self, is_available, title):
+        print(f"[网站检测] 回调主线程，结果: {is_available}, 标题: {title}")
+        self._website_status = is_available
+        self._website_title = title
+        # 仅在单机模式下刷新菜单（联机模式下该菜单项已被隐藏）
+        if self.tray_icon and not self.mp_client.connected:
+            self.create_menu()
 
     def _on_check_name_result(self, available, reason):
         # 优先处理强制改名对话框
@@ -3854,6 +5950,10 @@ class Firefly(QWidget):
         return False
 
     def _parse_items_spec(self, items_spec):
+        """
+        解析物品列表，返回 items 列表，失败返回 None。
+        支持 cake, credit, ticket, star_rail_tickets, jade, 时装ID。
+        """
         items = []
         for part in items_spec.split('&'):
             part = part.strip()
@@ -3872,14 +5972,20 @@ class Firefly(QWidget):
             else:
                 itype = part
                 qty = 1
+
+            # ★ 关键修改：增加 jade 和 star_rail_tickets 支持
             if itype == 'cake':
                 items.append({'type': 'cake', 'amount': qty})
             elif itype == 'credit':
                 items.append({'type': 'credit', 'amount': qty})
-            elif itype == 'ticket':
+            elif itype == 'ticket' or itype == 'star_rail_tickets':
                 items.append({'type': 'star_rail_ticket', 'amount': qty})
+            elif itype == 'jade':
+                items.append({'type': 'jade', 'amount': qty})
             else:
+                # 时装（保持原逻辑）
                 items.append({'type': 'clothes', 'id': itype})
+
         if not items:
             self.show_centered_message("错误", "未指定有效物品", QMessageBox.Warning)
             return None
@@ -3940,7 +6046,7 @@ class Firefly(QWidget):
                 pass
 
     def change_username_single(self):
-        """单机模式下修改本地账号的用户名"""
+        """单机模式下修改本地账号的用户名（不检测重名）"""
         if self.mp_client.connected:
             self.show_centered_message("提示", "请先断开服务器连接再修改用户名", QMessageBox.Warning)
             return
@@ -3952,7 +6058,14 @@ class Firefly(QWidget):
         dialog.setStyleSheet("""
             QDialog { background-color: #1E1E1E; border-radius: 10px; }
             QLabel { color: #888888; font-size: 14px; }
-            QLineEdit { background-color: #2D2D2D; color: white; border: 1px solid #555; border-radius: 5px; padding: 8px; }
+            QLineEdit { 
+                background-color: #2D2D2D; 
+                color: white; 
+                border: 1px solid #555; 
+                border-radius: 5px; 
+                padding: 9px 8px;   /* 原 padding: 8px，现上下增加1px */
+                font-size: 14px;
+            }
             QPushButton { background-color: #4CAF50; color: white; border: none; border-radius: 5px; padding: 8px 16px; }
             QPushButton:hover { background-color: #45A049; }
         """)
@@ -3969,7 +6082,6 @@ class Firefly(QWidget):
         btn_box.rejected.connect(dialog.reject)
         layout.addWidget(btn_box)
 
-        # 使对话框居中于屏幕
         screen_center = QApplication.primaryScreen().availableGeometry().center()
         dialog.move(screen_center - dialog.rect().center())
 
@@ -3983,32 +6095,10 @@ class Firefly(QWidget):
         if new_name == self.current_user["username"]:
             return
 
-        # 唯一性检查（排除当前用户自己的文件）
-        current_userid = self.current_user["userid"]
-        for filename in os.listdir(USER_DATA_DIR):
-            if not filename.endswith(".json"):
-                continue
-            if filename == f"{current_userid}.json":
-                continue
-            filepath = os.path.join(USER_DATA_DIR, filename)
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if data.get("username") == new_name:
-                    QMessageBox.warning(self, "提示", "用户名已存在")
-                    return
-            except:
-                continue
-
-        # 更新内存中的用户名
         self.current_user["username"] = new_name
-        # 保存到文件（文件名不变，仅内部 username 字段变化）
         self._save_current_user()
-
-        # 刷新右键菜单和托盘菜单
         self.create_menu()
-
-        self.show_centered_message("成功", f"用户名已修改为「{new_name}」\n下次登录将使用新名称。")
+        self.show_centered_message("成功", f"用户名已修改为「{new_name}」")
 
     def on_server_shutdown(self, reason):
         """服务端关闭或维护模式踢出时调用"""
@@ -4110,8 +6200,7 @@ class Firefly(QWidget):
             self.local_inventory_backup = None
 
         self.update_bag_display()
-        # ★ 移除或注释掉这行，避免二次覆盖
-        # self.apply_current_clothes()
+        self.apply_current_clothes()
         self.create_menu()
 
     def on_server_banned(self, message):
@@ -4379,6 +6468,13 @@ class Firefly(QWidget):
             cake_percent = min(100, cake_percent)
             cake_display = f"{cake_gained} / 72（{cake_percent}%）"
 
+            monthly_jade = self.current_user.get('monthly_jade_gained', 0)
+            monthly_ticket = self.current_user.get('monthly_ticket_gained', 0)
+            # 进度条相关
+            jade_target = 1600
+            jade_percent = min(100, int(monthly_jade / jade_target * 100)) if jade_target > 0 else 0
+            jade_display = f"{monthly_jade} / {jade_target}（{jade_percent}%）"
+
             # 获取显示名称和UID
             if self.mp_client.connected and self.online_name:
                 display_name = self.online_name
@@ -4391,6 +6487,10 @@ class Firefly(QWidget):
                 display_uid = self.current_user.get('uid', '未知') if self.current_user else '未知'
 
             data = {
+                "monthly_jade_gained": monthly_jade,
+                "monthly_ticket_gained": monthly_ticket,
+                "jade_display": jade_display,
+                "jade_percent": jade_percent,
                 "monthly_interactions": interactions,
                 "monthly_open_count": open_count,
                 "open_label": open_label,  # 新增
@@ -4467,8 +6567,43 @@ class Firefly(QWidget):
             print(f"重新打开聊天窗口失败: {e}")
 
     def _handle_kick(self, reason):
-        """在主线程中处理踢出（弹窗并断开）"""
-        self.show_centered_message("连接断开", f"与服务器断开连接！\n{reason}", QMessageBox.Warning)
+        """在主线程中处理踢出（独立模态弹窗，等待用户点击）"""
+        self._kick_pending = True
+        # 父对象设为 None，使其成为独立窗口，避免被 _close_all_windows 关闭
+        msg_box = QMessageBox(None)
+        msg_box.setWindowTitle("提示")
+        msg_box.setText(f"与服务器断开连接！\n{reason}")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.Dialog)
+        msg_box.setModal(True)
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+            }
+            QMessageBox QLabel {
+                color: #E0E0E0;
+                background-color: #1E1E1E;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+        """)
+        # 居中于屏幕
+        screen_center = QApplication.primaryScreen().availableGeometry().center()
+        msg_box.move(screen_center - msg_box.rect().center())
+        # 模态阻塞，等待用户点击
+        msg_box.exec_()
+        # 用户点击后，手动断开连接（不显示额外弹窗）
+        self._kick_pending = False
         self.disconnect_server(show_message=False)
 
     def on_permission_changed(self):
@@ -4487,38 +6622,38 @@ class Firefly(QWidget):
         """
         处理服务端推送的全局消息（聊天、系统、提及、踢出等）
         """
-        # ---- 强制调试：打印所有消息类型 ----
-        print(f"[全局消息] 收到类型: {msg.get('type')}")
-
         if not isinstance(msg, dict):
             return
 
         mtype = msg.get('type')
         data = msg.get('data', {})
 
-        # ---------- 处理踢出（Kick） ----------
+        # ---------- 新增：服务端配置热更新 ----------
+        if mtype == 'update_custom_config':
+            self.server_custom_menu = data.get('custom_menu', [])
+            self.server_custom_items = data.get('custom_items', [])
+            self.create_menu()
+            self.check_missing_resources()
+            return
+
+        # ---------- 处理踢出 ----------
         if mtype == 'kick':
             reason = data.get('reason', '你已被管理员踢出服务器，可重新连接。')
-            print("[KICK] 收到踢出消息，将调度主线程弹窗")
             QTimer.singleShot(0, lambda: self._handle_kick(reason))
             return
 
         # ---------- 禁言状态 ----------
         if mtype == 'mute_status':
-            print(f"[禁言] 从 on_global_message 收到 mute_status: {data.get('muted_until')}")
             self.on_mute_status(data.get('muted_until'))
             return
 
         # ---------- 聊天广播 ----------
         if mtype == 'chat_broadcast':
-            print(f"[调试] 收到 chat_broadcast，完整 data: {data}")
             from_name = data.get('from_name', '')
             text = data.get('text', '')
             is_system = data.get('is_system', False)
-            # 如果是系统消息且包含“撤回了一条消息”，忽略（因为已在recall_notification中处理）
             if is_system and '撤回了一条消息' in text:
                 return
-            # 其余聊天广播正常处理
             msg_id = data.get('msg_id', None)
             timestamp = data.get('time', datetime.now().isoformat())
             is_self = (from_name == self.online_name or from_name == self.current_user.get('username', ''))
@@ -4535,21 +6670,17 @@ class Firefly(QWidget):
                 self.chat_window.add_message_obj(msg_obj)
             return
 
-        # ---------- 撤回通知（必须添加） ----------
+        # ---------- 撤回通知 ----------
         if mtype == 'recall_notification':
             msg_id = data.get('msg_id')
             sender = data.get('sender', '某人')
-            # 查找并修改原消息
             for msg in self.chat_history:
                 if msg.get('id') == msg_id:
-                    # 改为系统消息样式
                     msg['text'] = f"{sender}撤回了一条消息"
                     msg['is_system'] = True
-                    msg['sender'] = '系统'  # 发件人改为系统
-                    msg['revoked'] = True  # 标记已撤回（可选）
-                    # 保留原时间，或改为当前时间（可选）
+                    msg['sender'] = '系统'
+                    msg['revoked'] = True
                     break
-            # 刷新聊天窗口（如果打开）
             if self.chat_window and self.chat_window.isVisible():
                 self.chat_window.refresh_all_messages()
             return
@@ -4564,21 +6695,12 @@ class Firefly(QWidget):
                 self.mentioned_all.emit(from_name)
             else:
                 self.mentioned.emit(from_name)
-            # 触发桌面通知
-            if is_all:
-                show_notification_async(
-                    title="流萤桌宠多人聊天",
-                    message=f"{from_name} @了所有人",
-                    icon_path="./assets/images/firefly/Happy/see.ico",
-                    duration=3
-                )
-            else:
-                show_notification_async(
-                    title="流萤桌宠多人聊天",
-                    message=f"{from_name} @了你",
-                    icon_path="./assets/images/firefly/Happy/see.ico",
-                    duration=3
-                )
+            show_notification_async(
+                title="流萤桌宠多人聊天",
+                message=f"{from_name} @了你" if not is_all else f"{from_name} @了所有人",
+                icon_path="./assets/images/firefly/Happy/see.ico",
+                duration=3
+            )
             self.open_chat_window()
             return
 
@@ -4594,6 +6716,8 @@ class Firefly(QWidget):
             self.online_inventory = inv
             today = datetime.now().strftime('%Y-%m-%d')
             self.online_signed_today = (inv.get('last_sign_date') == today)
+            if 'custom_items' in inv:
+                self.online_inventory['custom_items'] = inv['custom_items']
             self.update_bag_display()
             if hasattr(self, '_before_redeem_credit') and self._before_redeem_credit is not None:
                 old_credit = self._before_redeem_credit
@@ -4668,19 +6792,19 @@ class Firefly(QWidget):
         # ---------- 服务器关闭通知 ----------
         if mtype == 'server_shutdown':
             reason = data.get('reason', '服务器已关闭')
-            self.show_centered_message("服务器通知", reason, QMessageBox.Information)
+            # 先断开连接并设置标志，避免在弹窗期间触发意外断开弹窗
             self.disconnect_server(show_message=False)
+            # 再显示通知
+            self.show_centered_message("服务器通知", reason, QMessageBox.Information)
             return
 
-        # ---------- 系统消息（非聊天广播） ----------
+        # ---------- 系统消息 ----------
         if mtype == 'system_message':
             text = data.get('text', '')
-            # ---------- 新增：检测聊天记录清空通知 ----------
             if "聊天记录已清空" in text:
-                self.chat_history.clear()  # 清空本地历史
+                self.chat_history.clear()
                 if self.chat_window and self.chat_window.isVisible():
-                    self.chat_window.refresh_all_messages()  # 刷新窗口（清空显示）
-                    # 同时插入一条系统消息显示清空通知
+                    self.chat_window.refresh_all_messages()
                     self.chat_window.add_message(
                         sender='系统',
                         text=text,
@@ -4688,13 +6812,11 @@ class Firefly(QWidget):
                         is_system=True
                     )
                 return
-            # ---------- 原有封禁检测 ----------
             if '封禁' in text or 'banned' in text.lower():
                 self.banned = True
                 self.show_centered_message("封禁通知", text, QMessageBox.Warning)
                 self.disconnect_server(show_message=False)
                 return
-            # 检测解除禁言（系统广播）
             if '已被解除禁言' in text:
                 import re
                 match = re.search(r'(\S+)\s*已被解除禁言', text)
@@ -4702,11 +6824,9 @@ class Firefly(QWidget):
                     target = match.group(1)
                     my_name = self.online_name or self.current_user.get('username', '')
                     if target == my_name or self.muted_until is not None:
-                        print(f"[禁言] 根据系统广播解除禁言 (target={target})")
                         self.on_mute_status(None)
                         if self.chat_window and self.chat_window.isVisible():
                             self.chat_window.update_mute_status(None)
-            # 正常显示系统消息（所有系统消息都显示）
             if self.chat_window and self.chat_window.isVisible():
                 self.chat_window.add_message(
                     sender='系统',
@@ -4720,8 +6840,10 @@ class Firefly(QWidget):
         print(f"[未处理消息] type={mtype}, data={data}")
 
     def get_display_uid(self):
-        if self.mp_client.connected and self.online_name:
-            return f"{self.online_name} (UID:{self.online_uid})"
+        if self.mp_client.connected and self.online_uid:
+            # 显示 UID（已包含 admin/user 前缀），并附加管理员标识
+            perm_suffix = " [管理员]" if self.is_admin else ""
+            return f"{self.online_name} ({self.online_uid}){perm_suffix}"
         return f"{self.current_user['username']} (UID:{self.current_user['uid']})"
 
     def change_online_name(self):
@@ -4823,24 +6945,43 @@ class Firefly(QWidget):
         self.check_month_reset()
         self.current_user["monthly_open_count"] += 1
         self._save_current_user()
+
+        # ---------- 修改点1：接收服务端自定义菜单和物品 ----------
+        self.server_custom_menu = data.get('custom_menu', [])
+        self.server_custom_items = data.get('custom_items', [])
+        # 检查资源完整性（若需要下载则弹窗）
+        self.check_missing_resources()
+
+        # ---------- 修改点2：仅保留一次 create_menu() ----------
         self.create_menu()
+
         if self.chat_window:
             self.chat_window.update_mute_status(self.muted_until)
+
         if require_rename:
             QTimer.singleShot(300, self.show_forced_rename_dialog)
         else:
             QTimer.singleShot(100,
                               lambda: self.show_centered_message("成功", f"已连接到服务器\n你的服务器UID: {uid}"))
-        self.create_menu()
+
+        # 应用时装
         self.apply_current_clothes()
         self._waiting_for_name = True
         self.mp_client.request_player_list()
         self.mp_client.ping()
         self.ping_timer.start()
         self.online_uid = uid
+
         # 确保打开窗口时加载最新历史
         if hasattr(self, 'chat_window') and self.chat_window and self.chat_window.isVisible():
             self.chat_window.refresh_all_messages()
+
+        # ===== 新增：保存服务端下发的 gacha_history =====
+        gacha_history = data.get('gacha_history', [])
+        if gacha_history:
+            self.current_user['gacha_history'] = gacha_history
+            self._save_current_user()
+            print(f"[登录] 已同步抽卡历史 {len(gacha_history)} 条")
 
     def _update_online_players_for_rename(self, players):
         # 如果对话框已关闭，断开连接并返回
@@ -4997,31 +7138,133 @@ class Firefly(QWidget):
         self._rename_dialog.setEnabled(False)
 
     def on_mp_login_failed(self, reason):
+        """
+        处理服务端返回的登录失败消息（黑名单、白名单、人数已满、版本不兼容、账号数据异常等）。
+        弹出错误对话框，并断开连接恢复单机状态。
+        """
+        print("[DEBUG] on_mp_login_failed 被调用，原因:", reason)
         self.connecting = False
-        # 判断是否为版本相关错误
-        is_version_error = any(keyword in reason for keyword in ["版本过低", "版本过高", "未知版本号", "版本不兼容"])
-        if is_version_error:
-            # 对于版本错误，设置主动断开标志，避免显示“与服务器断开连接”弹窗
-            self._is_manual_disconnect = True
-        if "封禁" in reason:
-            self.banned = True
-            self.show_centered_message("封禁通知", f"无法加入服务器：{reason}", QMessageBox.Warning)
+        self._is_manual_disconnect = True
+
+        # 根据错误类型定制标题
+        if "版本" in reason or "版本号" in reason:
+            title = "版本不兼容"
+        elif "封禁" in reason or "ban" in reason.lower():
+            title = "封禁通知"
+        elif "人数已满" in reason or "上限" in reason:
+            title = "连接失败"
+        elif "白名单" in reason:
+            title = "访问被拒"
+        elif "黑名单" in reason:
+            title = "访问被拒"
+        elif "账号数据异常" in reason:
+            title = "账号错误"
         else:
-            # 非封禁错误（包括版本错误）仍然显示原因，但不额外弹断开连接窗
-            self.show_centered_message("连接失败", f"无法加入服务器：{reason}", QMessageBox.Warning)
+            title = "连接失败"
+
+        # 使用 QTimer 确保弹窗在主线程执行（即使当前在子线程，也能安全显示）
+        def show_dialog():
+            msg_box = QMessageBox()
+            msg_box.setWindowTitle(title)
+            msg_box.setText(reason)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: #1E1E1E;
+                    color: #E0E0E0;
+                }
+                QMessageBox QLabel {
+                    color: #E0E0E0;
+                    background-color: #1E1E1E;
+                }
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 5px 10px;
+                }
+                QPushButton:hover {
+                    background-color: #45A049;
+                }
+                QPushButton:pressed {
+                    background-color: #3D8B40;
+                }
+            """)
+            self.center_window(msg_box)  # 使用现有的居中方法
+            msg_box.exec_()
+
+        # 在主线程空闲时执行
+        QTimer.singleShot(0, show_dialog)
+
+        # 标记状态并断开连接
+        if "封禁" in reason or "白名单" in reason or "黑名单" in reason:
+            self.banned = True
+
+        if self.mp_client.connected:
+            self.mp_client.disconnect()
+        if hasattr(self, '_restore_single_player_state'):
+            self._restore_single_player_state()
+        else:
+            self.disconnect_server(show_message=False)
+
+    def _show_disconnect_dialog(self):
+        msg_box = QMessageBox()
+        msg_box.setWindowTitle("连接断开")
+        msg_box.setText("与服务器的连接意外断开！")
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+            }
+            QMessageBox QLabel {
+                color: #E0E0E0;
+                background-color: #1E1E1E;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:pressed {
+                background-color: #3D8B40;
+            }
+        """)
+        self.center_window(msg_box)  # 只移动位置，不调整尺寸
+        msg_box.exec_()  # 模态显示
 
     def on_mp_status_changed(self, connected):
         self.connecting = False
         if not connected:
-            # ----- 清空本地聊天记录缓存（本次连接期间的记录） -----
+            # 关闭所有子窗口（聊天、商店等），但不会关闭独立弹窗
+            self._close_all_windows()
             self.chat_history = []
-            # ----- 关闭聊天窗口（如果打开） -----
             if self.chat_window:
-                self.chat_window.close()
-                self.chat_window = None
-            if self._was_connected and not self._suppress_disconnect_message:
-                self.show_centered_message("连接断开", "与服务器断开连接！", QMessageBox.Warning)
-                self._restore_single_player_state()
+                try:
+                    self.chat_window.close()
+                    self.chat_window = None
+                except:
+                    pass
+
+            # 判断是否为意外断开（非主动断开且非被踢出，且未抑制消息）
+            if self._was_connected and not self._is_manual_disconnect and not self._kick_pending and not self._suppress_disconnect_message:
+                QTimer.singleShot(1000, self._show_disconnect_dialog)
+                QTimer.singleShot(0, self._safe_restore_single_player_state)
+            else:
+                # 被踢出或主动断开，直接恢复单机状态
+                QTimer.singleShot(0, self._safe_restore_single_player_state)
+
+            # 清理联机状态
             self._suppress_disconnect_message = False
             self.online_uid = ''
             self.server_uid = None
@@ -5030,15 +7273,30 @@ class Firefly(QWidget):
             self._was_connected = False
             self.ai_enabled = True
             self.muted_until = None
-            self.ping_timer.stop()  # 断开时停止
+            self.ping_timer.stop()
             if self.chat_window:
                 self.chat_window.update_mute_status(None)
+            self.server_custom_menu = []
+            self.server_custom_items = []
+            self.create_menu()
+
+            if self._is_manual_disconnect:
+                QTimer.singleShot(0, self._safe_restore_single_player_state)
+
+            self._is_manual_disconnect = False
+            self._kick_pending = False
         else:
             self._was_connected = True
-            self.ping_timer.start()  # 连接成功时启动
-            print("[PING] 定时器已启动 (on_mp_status_changed)")  # 调试
-        self._is_manual_disconnect = False
-        self.create_menu()
+            self.ping_timer.start()
+
+    def _safe_restore_single_player_state(self):
+        """安全恢复单机状态，捕获所有异常以防止卡死"""
+        try:
+            self._restore_single_player_state()
+        except Exception as e:
+            print(f"[恢复单机状态] 异常: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _get_mp_menu_text(self):
         if not self.mp_client.connected:
@@ -5308,6 +7566,205 @@ class Firefly(QWidget):
         dialog.move(screen_center - dialog.rect().center())
         dialog.exec_()
 
+    def _open_gacha_page(self, menu_id):
+        """
+        打开服务器下发的抽卡页面（QWebEngineView），支持有效期管理。
+        如果菜单项已过期，则不允许打开；打开后若过期，窗口自动关闭。
+        """
+        import os
+        from PyQt5.QtCore import QUrl, Qt, QTimer
+        from PyQt5.QtWebChannel import QWebChannel
+        from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineSettings
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+
+        # ----- 1. 查找菜单项并检查有效期 -----
+        def find_menu_item(menu_id, items):
+            for item in items:
+                if item.get('id') == menu_id:
+                    return item
+                if 'children' in item:
+                    found = find_menu_item(menu_id, item['children'])
+                    if found:
+                        return found
+            return None
+
+        menu_item = find_menu_item(menu_id, self.server_custom_menu)
+        if not menu_item:
+            self.show_centered_message("错误", "菜单项不存在", QMessageBox.Warning)
+            return
+
+        # 检查有效期
+        expiry = menu_item.get('expiry')
+        if expiry:
+            try:
+                dt = datetime.fromisoformat(expiry)
+                if datetime.now(dt.tzinfo) >= dt:
+                    self.show_centered_message("提示", f"{menu_item.get('label')} 已过期", QMessageBox.Warning)
+                    return
+            except:
+                pass
+
+        # ----- 2. 构建资源路径 -----
+        index_path = os.path.join(self.server_resource_dir, menu_id)
+        abs_path = os.path.abspath(os.path.join(index_path, 'index.html'))
+        print(f"[Gacha页面] 路径:{abs_path}")
+        if not os.path.exists(abs_path):
+            self.show_centered_message("错误", "页面文件不存在", QMessageBox.Warning)
+            return
+
+        # ----- 3. 清理旧窗口资源 -----
+        if hasattr(self, "gacha_view") and self.gacha_view is not None:
+            try:
+                self.gacha_view.destroyed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.gacha_view.deleteLater()
+            except RuntimeError:
+                pass
+            self.gacha_view = None
+
+        if hasattr(self, "_current_gacha_bridge"):
+            delattr(self, "_current_gacha_bridge")
+
+        # ----- 4. 创建新窗口和桥接 -----
+        view = QWebEngineView()
+        view.setWindowTitle("群星跃迁")
+        screen_geo = QApplication.primaryScreen().availableGeometry()
+        view.resize(int(screen_geo.width() * 0.8), int(screen_geo.height() * 0.8))
+        view.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.gacha_view = view
+        page = view.page()
+
+        bridge = GachaBridge(self)
+        self._current_gacha_bridge = bridge
+        bridge.set_webview(view)
+
+        self._gacha_channel = QWebChannel()
+        self._gacha_channel.registerObject("gacha_bridge", bridge)
+        page.setWebChannel(self._gacha_channel)
+
+        # 窗口销毁清理
+        def on_win_destroy():
+            bridge.set_webview(None)
+            self._gacha_channel = None
+            self._current_gacha_bridge = None
+            if hasattr(self, '_gacha_win_info'):
+                self._gacha_win_info = None
+
+        view.destroyed.connect(on_win_destroy)
+
+        settings = view.settings()
+        settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, True)
+        settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.AllowRunningInsecureContent, True)
+        settings.setAttribute(QWebEngineSettings.Accelerated2dCanvasEnabled, False)
+        settings.setAttribute(QWebEngineSettings.WebGLEnabled, False)
+
+        page.javaScriptConsoleMessage = lambda lv, msg, line, src: print(f"[JS日志] line{line}: {msg}")
+
+        self._gacha_page_init_called = False
+
+        def on_load_finished(ok):
+            print(f"页面加载完成:{ok}")
+            if ok and not self._gacha_page_init_called:
+                self._gacha_page_init_called = True
+                QTimer.singleShot(300, lambda: page.runJavaScript("if(window.initBridge) initBridge();"))
+
+        view.loadFinished.connect(on_load_finished)
+
+        def real_load_html():
+            target_url = QUrl.fromLocalFile(abs_path)
+            view.load(target_url)
+
+        QTimer.singleShot(150, real_load_html)
+
+        # ----- 5. 记录窗口信息并启动过期检查定时器 -----
+        self._gacha_win_info = {
+            'menu_id': menu_id,
+            'expiry': expiry,
+            'window': view,
+            'menu_label': menu_item.get('label', '抽卡')
+        }
+
+        if not hasattr(self, '_gacha_expiry_timer'):
+            self._gacha_expiry_timer = QTimer(self)
+            self._gacha_expiry_timer.timeout.connect(self._check_gacha_expiry)
+            self._gacha_expiry_timer.start(1000)
+
+        view.show()
+        view.raise_()
+        view.activateWindow()
+        print("跃迁窗口已打开")
+
+    def _check_gacha_expiry(self):
+        info = getattr(self, '_gacha_win_info', None)
+        if not info:
+            return
+        expiry = info.get('expiry')
+        if expiry:
+            try:
+                dt = datetime.fromisoformat(expiry)
+                if datetime.now(dt.tzinfo) >= dt:
+                    win = info.get('window')
+                    if win:
+                        win.close()
+                    self._gacha_win_info = None
+                    self.show_centered_message("提示", f"{info.get('menu_label', '抽卡')} 已过期，窗口已关闭",
+                                               QMessageBox.Warning)
+            except:
+                pass
+
+    def _inject_gacha_data(self, view):
+        bridge = self._current_gacha_bridge
+        if not bridge:
+            print("[Gacha] 桥接对象不存在，无法注入数据")
+            return
+        try:
+            data_str = bridge.getUserInfo()
+            # 直接操作 DOM，更新显示
+            js = f"""
+            (function() {{
+                console.log('开始注入数据');
+                var data = {data_str};
+                var ticketEl = document.getElementById('ticketCount');
+                var jadeEl = document.getElementById('jadeCount');
+                var pityEl = document.getElementById('pityCount');
+                var uidEl = document.getElementById('uidDisplay');
+                if (ticketEl) ticketEl.textContent = data.tickets || 0;
+                if (jadeEl) jadeEl.textContent = data.jade || 0;
+                if (pityEl) pityEl.textContent = data.pity || 0;
+                if (uidEl) uidEl.textContent = 'UID: ' + (data.uid || '--');
+                // 更新保底样式
+                var badge = document.getElementById('pityBadge');
+                if (badge) {{
+                    var span = badge.querySelector('span');
+                    if (span) {{
+                        span.textContent = data.pity || 0;
+                        if (data.pity >= 80) {{
+                            badge.style.borderColor = 'rgba(247,201,72,0.4)';
+                            span.style.color = '#f7c948';
+                            badge.style.background = 'rgba(247,201,72,0.08)';
+                        }} else if (data.pity >= 70) {{
+                            badge.style.borderColor = 'rgba(247,201,72,0.2)';
+                            span.style.color = '#e6c87a';
+                            badge.style.background = 'rgba(0,0,0,0.5)';
+                        }} else {{
+                            badge.style.borderColor = 'rgba(255,255,255,0.06)';
+                            span.style.color = '#e6c87a';
+                            badge.style.background = 'rgba(0,0,0,0.5)';
+                        }}
+                    }}
+                }}
+                // 若前端需要更新其他数据，可继续添加
+            }})();
+            """
+            view.page().runJavaScript(js)
+            print(f"[Gacha] 数据注入完成，数据: {data_str}")
+        except Exception as e:
+            print(f"[Gacha] 注入失败: {e}")
+
     def _handle_exit_choice(self, dialog, clear_login=False):
         dialog.accept()
         if clear_login:
@@ -5317,11 +7774,12 @@ class Firefly(QWidget):
 
     def _perform_logout(self):
         # 保存当前状态和位置
-        self.current_user["last_state"] = self.persistent_state
-        pos = self.pos()
-        self.current_user["last_x"] = pos.x()
-        self.current_user["last_y"] = pos.y()
-        self._save_current_user()
+        if self.current_user:
+            self.current_user["last_state"] = self.persistent_state
+            pos = self.pos()
+            self.current_user["last_x"] = pos.x()
+            self.current_user["last_y"] = pos.y()
+            self._save_current_user()
 
         # 删除自动登录配置
         if os.path.exists(USER_CONFIG):
@@ -5330,16 +7788,11 @@ class Firefly(QWidget):
         # 断开服务器连接（如果有）
         self.disconnect_server()
 
-        # 注销全局热键
-        if hasattr(self, 'hotkey_filter'):
-            self.hotkey_filter.unregister()
-            QApplication.instance().removeNativeEventFilter(self.hotkey_filter)
-
         # 停止音乐播放
         try:
             pygame.mixer.music.stop()
             pygame.mixer.quit()
-        except:
+        except Exception:
             pass
 
         # 隐藏窗口和托盘图标
@@ -5349,23 +7802,19 @@ class Firefly(QWidget):
 
         # 确定重启命令
         if getattr(sys, 'frozen', False):
-            # 打包成 exe 的情况
             program = sys.executable
             args = []
         else:
-            # 开发环境：使用 python 解释器运行当前脚本
             program = sys.executable
             args = [os.path.abspath(sys.argv[0])]
 
         # 启动新进程，使其独立于当前进程
         if sys.platform == 'win32':
-            # Windows：使用 DETACHED_PROCESS 和 CREATE_NEW_PROCESS_GROUP
             subprocess.Popen(
                 [program] + args,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
             )
         else:
-            # Unix-like：使用 start_new_session
             subprocess.Popen([program] + args, start_new_session=True)
 
         # 延迟退出旧进程，给新进程足够的初始化时间
@@ -5825,6 +8274,9 @@ class Firefly(QWidget):
             print(f"[ERROR] 保存用户数据失败: {e}")
             return
 
+        if self.mp_client.connected:
+            self._check_and_grant_achievement()
+
         # ---------- 2. 联机时上报统计数据到服务端 ----------
         if self.mp_client.connected and self.current_user:
             try:
@@ -5904,21 +8356,52 @@ class Firefly(QWidget):
                 json.dump(user_data, f, ensure_ascii=False, indent=2)
 
     def send_mail_to_user(self, target_user, title, content, items):
+        """
+        发送邮件给目标用户（单机/联机通用）
+        - 联机模式：通过服务端发送
+        - 单机模式：直接添加到 target_user 的 mailbox
+        """
         if self.mp_client.connected:
             # 联机模式：通过服务端发送
             target_uid = target_user.get('server_uid') or target_user.get('uid')
             if not target_uid:
                 print("联机模式发邮件：缺少目标uid")
                 return
-            self.mp_client.send_mail(target_uid, title, content, items)
+            self.mp_client._send({
+                'type': 'send_mail',
+                'data': {
+                    'target_uid': target_uid,
+                    'title': title,
+                    'content': content,
+                    'items': items
+                }
+            })
         else:
-            # 单机模式：本地发送
-            send_mail(target_user, title, content, items)
-            self.save_user_data(target_user)
-            if target_user["userid"] == self.current_user["userid"]:
+            # 单机模式：直接添加到目标用户的 mailbox
+            if 'mailbox' not in target_user:
+                target_user['mailbox'] = []
+            mail = {
+                'id': str(uuid.uuid4()),  # 生成唯一ID（可选）
+                'sender': '系统',
+                'title': title,
+                'content': content,
+                'timestamp': datetime.now().isoformat(),
+                'items': items,
+                'read': False,
+                'claimed': False
+            }
+            target_user['mailbox'].append(mail)
+            # 保存目标用户数据
+            if target_user.get('userid') == self.current_user.get('userid'):
                 self._save_current_user()
+            else:
+                self.save_user_data(target_user)
 
     def show_centered_message(self, title, text, icon=QMessageBox.Information, buttons=QMessageBox.Ok):
+        """
+        显示一个居中的深色主题消息框，支持自定义图标和按钮。
+        返回用户点击的按钮（如 QMessageBox.Yes/No 等）。
+        """
         msg = QMessageBox(self)
         msg.setWindowTitle(title)
         msg.setText(text)
@@ -5944,7 +8427,14 @@ class Firefly(QWidget):
             QPushButton:hover {
                 background-color: #45A049;
             }
+            QPushButton[text="No"] {
+                background-color: #666666;
+            }
+            QPushButton[text="No"]:hover {
+                background-color: #888888;
+            }
         """)
+        # 对 Yes/No 按钮单独调整颜色（可选）
         if buttons == (QMessageBox.Yes | QMessageBox.No):
             yes_btn = msg.button(QMessageBox.Yes)
             if yes_btn:
@@ -5952,6 +8442,7 @@ class Firefly(QWidget):
             no_btn = msg.button(QMessageBox.No)
             if no_btn:
                 no_btn.setStyleSheet("background-color: #4CAF50;")
+        # 居中于屏幕
         screen_center = QApplication.primaryScreen().availableGeometry().center()
         msg.move(screen_center - msg.rect().center())
         return msg.exec_()
@@ -6027,18 +8518,18 @@ class Firefly(QWidget):
 
         # ---------- 单机签到逻辑（原有代码） ----------
         now = datetime.now()
-        today_3am = now.replace(hour=3, minute=0, second=0, microsecond=0)
-        if now < today_3am:
-            reset_time = today_3am - timedelta(days=1)
+        today_4am = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        if now < today_4am:
+            reset_time = today_4am - timedelta(days=1)
         else:
-            reset_time = today_3am
+            reset_time = today_4am
 
         last_sign = self.current_user.get("last_sign_date")
         if last_sign:
             try:
                 last_sign_dt = datetime.fromisoformat(last_sign)
                 if last_sign_dt >= reset_time:
-                    self.show_centered_message("提示", "今日已经签到过了，凌晨3点后再来哦！", QMessageBox.Warning)
+                    self.show_centered_message("提示", "今日已经签到过了，凌晨4点后再来哦！", QMessageBox.Warning)
                     self.create_menu()
                     return
             except:
@@ -6101,11 +8592,11 @@ class Firefly(QWidget):
         try:
             last_sign_dt = datetime.fromisoformat(last_sign)
             now = datetime.now()
-            today_3am = now.replace(hour=3, minute=0, second=0, microsecond=0)
-            if now < today_3am:
-                reset_time = today_3am - timedelta(days=1)
+            today_4am = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            if now < today_4am:
+                reset_time = today_4am - timedelta(days=1)
             else:
-                reset_time = today_3am
+                reset_time = today_4am
             return last_sign_dt >= reset_time
         except:
             return False
@@ -6114,8 +8605,55 @@ class Firefly(QWidget):
         pass
 
     def open_shop(self):
-        shop = ShopWindow(self, self)
+        """打开商店窗口，并保存引用"""
+        if self.shop_window is not None:
+            # 如果已存在则激活
+            self.shop_window.raise_()
+            self.shop_window.activateWindow()
+            return
+        shop = ShopMainWindow(self, self)
+        self.shop_window = shop
+        shop.finished.connect(self._on_shop_closed)  # 窗口关闭时清空引用
         shop.open()
+
+    def _on_shop_closed(self):
+        """商店窗口关闭时的回调"""
+        self.shop_window = None
+
+    def _close_all_windows(self):
+        """关闭所有可能打开的子窗口（商店、聊天、邮箱、历史记录等），但保留 QMessageBox 弹窗"""
+        # 关闭商店
+        if self.shop_window:
+            try:
+                self.shop_window.close()
+                self.shop_window = None
+            except Exception:
+                pass
+
+        # 关闭聊天窗口
+        if self.chat_window:
+            try:
+                self.chat_window.close()
+                self.chat_window = None
+            except Exception:
+                pass
+
+        # 关闭在线列表悬浮窗
+        if self.online_overlay:
+            try:
+                self.online_overlay.hide()
+            except Exception:
+                pass
+
+        # 关闭所有模态对话框（除 QMessageBox 外）
+        for widget in QApplication.topLevelWidgets():
+            if isinstance(widget, QDialog) and not isinstance(widget, QMessageBox):
+                if widget.isVisible():
+                    try:
+                        widget.close()
+                    except Exception:
+                        pass
+            # 如果是 QMessageBox，保留它（比如踢出弹窗）
 
     def give_item(self, amount, item_type, target_identifiers_str=None, clothes_id=None):
         if item_type not in ("cake", "clothes"):
@@ -6166,12 +8704,9 @@ class Firefly(QWidget):
         return True
 
     def show_join_dialog(self):
-        dlg = JoinServerDialog(self, self)  # 第一个参数是 firefly，第二个是 parent
-        if dlg.exec_() == QDialog.Accepted:
-            # 原有逻辑：如果通过列表/手动输入加入，会走到这里
-            # 但直接加入已在按钮中处理，这里保留原有手动输入的兼容
-            host, port = dlg.get_address()
-            self.join_server(host, port)
+        """打开加入服务器对话框（连接逻辑由对话框内部处理）"""
+        dlg = JoinServerDialog(self, self)
+        dlg.exec_()  # 对话框内部会处理连接，无需额外操作
 
     class CountryFetcher(QThread):
         finished = pyqtSignal(str)
@@ -6212,6 +8747,7 @@ class Firefly(QWidget):
         self.country_fetcher = None
 
     def disconnect_server(self, show_message=True):
+        self._close_gacha_window()
         if self._rename_dialog:
             try:
                 self._rename_dialog.close()
@@ -6221,25 +8757,29 @@ class Firefly(QWidget):
         self._is_manual_disconnect = True
         self._suppress_disconnect_message = True
         self.banned = False
-        self.is_admin = False  # 默认非管理员，登录后更新
+        self.is_admin = False
         self._waiting_for_name = False
         self.rename_required = False
+
+        # 关闭所有子窗口
+        self._close_all_windows()
+
         if self.mp_client.connected:
             if show_message:
                 self.show_centered_message("提示", "已断开与服务器的连接", QMessageBox.Information)
             if self.online_inventory:
                 self.mp_client._send({'type': 'save_inventory', 'data': {'inventory': self.online_inventory}})
             self.mp_client.disconnect()
-        # 恢复单机状态（内存恢复）
+        # 恢复单机状态
         self._restore_single_player_state()
-        # 删除备份文件（正常断开时删除）
+        # 删除备份文件
         backup_path = os.path.join(USER_DATA_DIR, 'single_state_backup.json')
         if os.path.exists(backup_path):
             try:
                 os.remove(backup_path)
             except:
                 pass
-        # 清理其他联机相关变量
+        # 清理联机变量
         self.server_uid = None
         self.server_permission = 'user'
         self.online_uid = ''
@@ -6247,11 +8787,11 @@ class Firefly(QWidget):
         self.online_redeemed_codes = []
         self.online_signed_today = False
         self._pending_mail_request = None
-        # ★ 新增：重置 AI 状态为默认 True（单机可用）
         self.ai_enabled = True
         self.ping_timer.stop()
+        self.server_custom_menu = []
+        self.server_custom_items = []
         self.create_menu()
-        # 重置禁言状态
         self.muted_until = None
         if self.chat_window:
             self.chat_window.update_mute_status(None)
@@ -6263,166 +8803,53 @@ class Firefly(QWidget):
         pass
 
     def clear_item(self, item_type, target_identifiers_str=None):
-        if item_type != "cake":
-            self.show_centered_message("错误", "当前仅支持清空橡木蛋糕卷", QMessageBox.Warning)
+        """
+        清空目标用户的特定物品（蛋糕卷或信用点）。
+        支持 @s（自己）、单个用户名/用户ID，或逗号分隔的多个标识符（通过 find_users_by_identifiers 处理）。
+
+        参数:
+            item_type: 物品类型，支持 'cake'（橡木蛋糕卷）或 'credit'（信用点）
+            target_identifiers_str: 用户标识符，可选。若为 None 或空，默认清空自己。
+        """
+        # 1. 验证物品类型
+        if item_type not in ("cake", "credit"):
+            self.show_centered_message("错误", f"当前仅支持清空 cake 或 credit，不支持 {item_type}", QMessageBox.Warning)
             return False
-        if target_identifiers_str:
-            try:
-                target_users = self.find_users_by_identifiers(target_identifiers_str)
-                if target_users is None:
-                    self.show_centered_message("错误", "目标用户列表无效", QMessageBox.Warning)
-                    return False
-                for tu in target_users:
-                    tu["balance"] = 0
-                    self.save_user_data(tu)
-                self.show_centered_message("成功", f"已清空 {len(target_users)} 个用户的蛋糕卷", QMessageBox.Information)
-            except ValueError as e:
-                self.show_centered_message("错误", str(e), QMessageBox.Warning)
+
+        # 2. 确定目标用户列表
+        target_users = []
+        if not target_identifiers_str or target_identifiers_str.strip() == "":
+            # 默认为自己
+            target_users = [self.current_user]
+        elif target_identifiers_str.strip().lower() == "@s":
+            target_users = [self.current_user]
+        else:
+            # 尝试按用户标识查找（支持逗号分隔）
+            found = self.find_users_by_identifiers(target_identifiers_str)
+            if found:
+                target_users = found
+            else:
+                self.show_centered_message("错误", f"未找到用户 {target_identifiers_str}", QMessageBox.Warning)
                 return False
-        else:
-            self.current_user["balance"] = 0
-            self._save_current_user()
-            self.show_centered_message("成功", "已清空自己的蛋糕卷", QMessageBox.Information)
+
+        # 3. 清空物品并保存
+        for user in target_users:
+            if item_type == "cake":
+                user["balance"] = 0
+            elif item_type == "credit":
+                user["credit"] = 0
+            # 保存用户数据（单机/联机适配）
+            if user.get("userid") == self.current_user.get("userid"):
+                self._save_current_user()  # 更新当前用户内存并保存文件
+            else:
+                self.save_user_data(user)  # 保存其他用户
+
+        # 4. 刷新当前用户界面
+        self.update_bag_display()
+
+        # 5. 提示成功
+        self.show_centered_message("成功", f"已清空 {len(target_users)} 个用户的 {item_type}", QMessageBox.Information)
         return True
-
-        # 构建物品描述字符串（用于日志）
-        def describe_items(items):
-            desc = []
-            for item in items:
-                t = item["type"]
-                if t == "cake":
-                    desc.append(f"蛋糕卷x{item['amount']}")
-                elif t == "credit":
-                    desc.append(f"信用点x{item['amount']}")
-                elif t == "clothes":
-                    name = AVAILABLE_CLOTHES.get(item["id"], {}).get("name", item["id"])
-                    desc.append(f"时装[{name}]")
-            return ", ".join(desc) if desc else "无"
-
-        if target_spec is None or target_spec.strip().lower() == "none":
-            # 全局撤销
-            if cinfo.get("revoked"):
-                self.show_centered_message("提示", f"兑换码 {code} 已经被全局撤销过了", QMessageBox.Warning)
-                return
-            cinfo["revoked"] = True
-            cinfo["revoked_by"] = self.current_user["username"]
-            cinfo["revoked_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            items_to_remove = cinfo.get("items", [])
-            item_desc = describe_items(items_to_remove)
-
-            revoked_users_list = []
-            for filename in os.listdir(USER_DATA_DIR):
-                if not filename.endswith(".json"):
-                    continue
-                filepath = os.path.join(USER_DATA_DIR, filename)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    user_data = json.load(f)
-                redeemed = user_data.get("redeemed_codes", [])
-                if code not in redeemed:
-                    continue
-
-                # 扣除所有物品
-                for item in items_to_remove:
-                    itype = item["type"]
-                    if itype == "cake":
-                        user_data["balance"] = user_data.get("balance", 0) - item["amount"]
-                        if user_data["balance"] < 0:
-                            user_data["balance"] = 0
-                    elif itype == "credit":
-                        user_data["credit"] = user_data.get("credit", 0) - item["amount"]
-                        if user_data["credit"] < 0:
-                            user_data["credit"] = 0
-                    elif itype == "clothes":
-                        owned = user_data.get("owned_clothes", [])
-                        cid = item["id"]
-                        if cid in owned:
-                            owned.remove(cid)
-                            user_data["owned_clothes"] = owned
-
-                redeemed.remove(code)
-                user_data["redeemed_codes"] = redeemed
-                history = user_data.get("redeem_history", [])
-                history.append(
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [系统] 兑换码 {code} 被管理员 {self.current_user['username']} 撤销，已扣除：{item_desc}"
-                )
-                user_data["redeem_history"] = history
-                self.save_user_data(user_data)
-                revoked_users_list.append(user_data["username"])
-
-            history = self.current_user.get("redeem_history", [])
-            history.append(
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [管理员] 全局撤销兑换码 {code}，影响用户：{', '.join(revoked_users_list) if revoked_users_list else '无'}"
-            )
-            self.current_user["redeem_history"] = history
-            self._save_current_user()
-            save_all_codes(all_codes)
-            self.show_centered_message("成功", f"已全局撤销兑换码 {code}，影响 {len(revoked_users_list)} 个用户",
-                                       QMessageBox.Information)
-
-        else:
-            # 指定用户撤销
-            try:
-                target_users = self.find_users_by_identifiers(target_spec)
-                if not target_users:
-                    self.show_centered_message("错误", "未找到任何有效用户", QMessageBox.Warning)
-                    return
-            except ValueError as e:
-                self.show_centered_message("错误", str(e), QMessageBox.Warning)
-                return
-
-            items_to_remove = cinfo.get("items", [])
-            item_desc = describe_items(items_to_remove)
-
-            revoked_count = 0
-            for tu in target_users:
-                userid = tu["userid"]
-                if userid in cinfo.get("revoked_users", []):
-                    continue
-                redeemed = tu.get("redeemed_codes", [])
-                if code not in redeemed:
-                    # 该用户并未使用此兑换码，仍标记为已撤销（防止将来使用）
-                    cinfo["revoked_users"].append(userid)
-                    continue
-
-                # 扣除物品
-                for item in items_to_remove:
-                    itype = item["type"]
-                    if itype == "cake":
-                        tu["balance"] = tu.get("balance", 0) - item["amount"]
-                        if tu["balance"] < 0:
-                            tu["balance"] = 0
-                    elif itype == "credit":
-                        tu["credit"] = tu.get("credit", 0) - item["amount"]
-                        if tu["credit"] < 0:
-                            tu["credit"] = 0
-                    elif itype == "clothes":
-                        owned = tu.get("owned_clothes", [])
-                        cid = item["id"]
-                        if cid in owned:
-                            owned.remove(cid)
-                            tu["owned_clothes"] = owned
-
-                redeemed.remove(code)
-                tu["redeemed_codes"] = redeemed
-                history = tu.get("redeem_history", [])
-                history.append(
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [系统] 兑换码 {code} 被管理员 {self.current_user['username']} 撤销，已扣除：{item_desc}"
-                )
-                tu["redeem_history"] = history
-                self.save_user_data(tu)
-                revoked_count += 1
-                cinfo["revoked_users"].append(userid)
-
-            history = self.current_user.get("redeem_history", [])
-            history.append(
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [管理员] 撤销用户 {target_spec} 对兑换码 {code} 的使用资格，实际扣除 {revoked_count} 人"
-            )
-            self.current_user["redeem_history"] = history
-            self._save_current_user()
-            save_all_codes(all_codes)
-            self.show_centered_message("成功", f"已撤销指定用户对兑换码 {code} 的使用资格，扣除 {revoked_count} 个用户",
-                                       QMessageBox.Information)
 
     def show_help(self):
         uid_prefix = self.current_user.get("uid", "").lower()
@@ -6430,38 +8857,84 @@ class Firefly(QWidget):
                     self.mp_client.connected and self.mp_client.server_permission == 'admin')
         if is_admin:
             help_text = (
-                "【可用命令】\n"
-                "/give <用户> <物品id> <数量>\n"
-                "    给玩家发放物品（邮件形式），示例：/give @s cake 5\n"
-                "/set <用户> <物品id> <数量>\n"
-                "    直接设定玩家物品数量（覆盖），示例：/set Gubwin credit 1000\n"
-                "/clear <用户> <物品或*>\n"
-                "    清空物品（仅支持玩家名或@s），示例：/clear Gubwin cake\n"
-                "/revoke <用户> <物品:数量&物品...>\n"
-                "    直接扣除玩家物品（允许负值，时装只能移除）\n"
-                "    用户: @a(所有人) @s(自己) 或 玩家名，不可对自己使用\n"
-                "    示例: /revoke Gubwin cake:5&credit:1000\n"
-                "/revoke code <兑换码> <用户>\n"
-                "    撤销指定用户对兑换码的使用资格（撤回兑换码）\n"
-                "    示例: /revoke code GIFT2026 @a\n"
-                "/set newcode <兑换码> <物品列表> [有效期]\n"
-                "    创建兑换码，物品列表如 cake:5&credit:1000&26_Newyear\n"
-                "    有效期格式 YYYY-MM-DD 或 1Y2M3D\n"
-                "/mute <用户> <时长>\n"
-                "    禁言玩家，时长同封禁（如 30D 或 2026-12-31）\n"
-                "    示例: /mute Gubwin 1D\n"
-                "/unmute <用户>\n"
-                "    解除禁言，示例: /unmute Gubwin\n"
-                "/function AI on|off\n"
-                "    启用或禁用服务器的 AI（在线对话）功能\n"
-                "/function Chat on|off\n"
-                "    启用或禁用服务器的多人聊天功能\n"
-                "/ban <玩家> [时长]         封禁玩家\n"
-                "/unban <玩家>              解封玩家\n"
-                "/op <玩家>                 提升为管理员\n"
-                "/deop <玩家>               取消管理员\n"
-                "/move                      立即触发一次桌宠移动（需勾选允许移动）\n"
-                "/help                      显示此帮助"
+                "═══════════════════════════════════════════\n"
+                "         流萤联机服务器 控制台帮助\n"
+                "═══════════════════════════════════════════\n\n"
+                "【服务器控制台专用命令】（仅在控制台有效）\n"
+                "  /restart           重启服务器（断开所有玩家）\n"
+                "  /close             关闭服务器（停止服务）\n"
+                "  /change name <新名称>  修改服务器名称（最多15字符）\n"
+                "  /fix on [消息]      开启维护模式并踢出所有玩家\n"
+                "  /fix off            关闭维护模式\n"
+                "  /All_Versions True/False  调试用，放行所有版本\n\n"
+                "【常用管理命令】（客户端可用）\n"
+                "  /give <用户> <物品id> <数量>\n"
+                "      给指定玩家发放物品（邮件形式）\n"
+                "      用户: @a(所有人) @s(自己) 或 玩家名\n"
+                "      物品: cake, credit, ruyi(时装), ticket, jade, star_rail_tickets\n"
+                "      示例: /give Gubwin credit 1000\n\n"
+                "  /set <用户> <物品id> <数量>\n"
+                "      直接设定玩家物品数量（覆盖）\n"
+                "      示例: /set @s cake 50\n\n"
+                "  /clear <用户> <物品或*>\n"
+                "      清空指定玩家的物品（仅支持玩家名或@s）\n"
+                "      物品: cake, credit, * (清空全部)\n"
+                "      示例: /clear Gubwin cake\n\n"
+                "  /revoke <用户> <物品:数量&物品...>\n"
+                "      直接扣除玩家物品（允许负值，时装只能移除）\n"
+                "      用户: @a(所有人) @s(自己) 或 玩家名\n"
+                "      物品: cake, credit, ticket, 时装ID\n"
+                "      示例: /revoke Gubwin cake:5&credit:1000\n"
+                "      被扣除的玩家会收到邮件通知，不可对自己使用\n\n"
+                "  /revoke code <兑换码> <用户>\n"
+                "      撤销指定用户对兑换码的使用资格（撤回兑换码）\n"
+                "      用户: 同 /revoke\n"
+                "      示例: /revoke code GIFT2026 @a\n\n"
+                "  /set newcode <兑换码> <物品列表>\n"
+                "      创建新兑换码，物品列表用 & 分隔\n"
+                "      格式: 物品:数量 (数量默认为1，上限9999)\n"
+                "      示例: /set newcode 新春福利 cake:5&ruyi&credit:1000\n\n"
+                "  /mute <用户> <时长>\n"
+                "      禁言玩家，时长格式同封禁（如 30D 或 2026-12-31）\n"
+                "      示例: /mute Gubwin 1D\n\n"
+                "  /unmute <用户>\n"
+                "      解除禁言\n"
+                "      示例: /unmute Gubwin\n\n"
+                "  /function AI on|off\n"
+                "      启用或禁用服务器的 AI（在线对话）功能\n\n"
+                "  /function Chat on|off\n"
+                "      启用或禁用服务器的多人聊天功能\n\n"
+                "【玩家管理】\n"
+                "  /ban <玩家> [时长]         封禁玩家（时长如 30D, 2026-12-31）\n"
+                "  /unban <玩家>              解封玩家\n"
+                "  /op <玩家>                 提升为管理员\n"
+                "  /deop <玩家>               取消管理员\n"
+                "  /resetname <用户>          重置玩家的改名冷却时间\n\n"
+                "【区域与时区封禁】\n"
+                "  /ban area <国家代码>       封禁地区\n"
+                "  /unban area <国家代码>     解封地区\n"
+                "  /ban timezone <时区名>     封禁时区\n"
+                "  /unban timezone <时区名>   解封时区\n\n"
+                "【IP 封禁】（管理员专用）\n"
+                "  /ban ip list              查看已封禁的 IP 列表\n"
+                "  /ban ip <IP>              直接封禁指定 IP（支持 IPv4）\n"
+                "  /ban ip <玩家名>          封禁在线玩家当前的 IP\n"
+                "  /unban ip <IP>            解封指定 IP\n"
+                "  ⚠️ 封禁 IP 后，所有使用该 IP 的非管理员玩家将被立即踢出。\n\n"
+                "【访问控制】（管理员专用）\n"
+                "  /maxplayers <人数>         设置服务器最大在线人数（默认10）\n"
+                "  /access <whitelist|blacklist|none> <on|off>\n"
+                "      开启/关闭白名单或黑名单模式，none 关闭所有限制\n"
+                "  /whitelist add|remove|list [uuid]\n"
+                "      管理白名单（uuid 为 server_uid 或 uid）\n"
+                "  /blacklist add|remove|list [uuid]\n"
+                "      管理黑名单（uuid 为 server_uid 或 uid）\n"
+                "  ⚠️ 管理员（op）拥有完全豁免权，不受上述限制\n\n"
+                "【其他】\n"
+                "  /kick <玩家>               踢出玩家（需在线）\n"
+                "  /recall <消息ID>           撤回自己的消息（2分钟内）\n"
+                "  /redeemstats               查看自己的兑换码净获得统计\n\n"
+                "💡 提示：所有管理命令仅管理员可用。输入 /help 查看本帮助。"
             )
         else:
             help_text = "【普通用户命令】\n直接输入兑换码字符串即可兑换。\n可用命令：\n/help  - 显示此帮助\n签到、商店、邮箱请通过右键菜单操作。"
@@ -6634,7 +9107,8 @@ class Firefly(QWidget):
             else:
                 amount = 1
             # 时装强制数量为1
-            if item_id not in ['cake', 'credit', 'ticket']:
+            if item_id not in ['cake', 'credit', 'ticket', 'star_rail_tickets',
+                               'jade'] and item_id not in AVAILABLE_CLOTHES:
                 amount = 1
 
             # 获取目标用户
@@ -6672,16 +9146,31 @@ class Firefly(QWidget):
                     self.show_centered_message("错误", f"未找到用户 {user_spec}", QMessageBox.Warning)
                     return True
 
-            # 构造物品
+            # ★ 构造物品（必须包含 jade 和 star_rail_tickets）
             items = []
             if item_id == 'cake':
                 items.append({'type': 'cake', 'amount': amount})
             elif item_id == 'credit':
                 items.append({'type': 'credit', 'amount': amount})
-            elif item_id == 'ticket':
+            elif item_id == 'ticket' or item_id == 'star_rail_tickets':
                 items.append({'type': 'star_rail_ticket', 'amount': amount})
-            else:
+            elif item_id == 'jade':
+                items.append({'type': 'jade', 'amount': amount})
+            elif item_id in AVAILABLE_CLOTHES:
                 items.append({'type': 'clothes', 'id': item_id})
+            else:
+                # 自定义物品（若有）
+                custom_items = self.server.load_custom_items() if hasattr(self, 'server') else []
+                item_info = next((it for it in custom_items if it.get('id') == item_id), None)
+                if item_info:
+                    items.append(
+                        {'type': 'custom', 'id': item_id, 'amount': amount, 'name': item_info.get('name', item_id)})
+                else:
+                    self.show_centered_message("错误", f"未知物品ID：{item_id}", QMessageBox.Warning)
+                    return True
+
+            # 调试：打印 items 确认非空
+            print(f"[DEBUG] /give items = {items}")
 
             # 发送邮件给每个目标
             for u in target_users:
@@ -6739,14 +9228,28 @@ class Firefly(QWidget):
                     self.show_centered_message("错误", f"未找到用户 {user_spec}", QMessageBox.Warning)
                     return True
 
-            # 设置物品
+            # ★ 设置物品（增加 jade 和 star_rail_tickets）
             for u in target_users:
+                inv = u  # 单机用户数据即 inventory
                 if item_id == 'cake':
-                    u['balance'] = amount
+                    inv['balance'] = amount
                 elif item_id == 'credit':
-                    u['credit'] = amount
-                elif item_id == 'ticket':
-                    u['star_rail_tickets'] = amount
+                    inv['credit'] = amount
+                elif item_id == 'ticket' or item_id == 'star_rail_tickets':
+                    inv['star_rail_tickets'] = amount
+                elif item_id == 'jade':
+                    inv['jade'] = amount
+                elif item_id in AVAILABLE_CLOTHES:
+                    if amount == 0:
+                        if item_id in inv.get('owned_clothes', []):
+                            inv['owned_clothes'].remove(item_id)
+                    elif amount == 1:
+                        if item_id not in inv.get('owned_clothes', []):
+                            inv['owned_clothes'].append(item_id)
+                    else:
+                        self.show_centered_message("错误", f"时装只能设置为 0(移除) 或 1(添加)，当前为 {amount}",
+                                                   QMessageBox.Warning)
+                        return True
                 else:
                     self.show_centered_message("错误", f"未知物品: {item_id}", QMessageBox.Warning)
                     return True
@@ -6825,7 +9328,10 @@ class Firefly(QWidget):
                 else:
                     itype = part
                     qty = 1
-                if itype not in ('cake', 'credit', 'ticket') and itype not in AVAILABLE_CLOTHES:
+
+                # ★ 修改点1：扩展支持 jade 和 star_rail_tickets
+                if itype not in ('cake', 'credit', 'ticket', 'star_rail_tickets',
+                                 'jade') and itype not in AVAILABLE_CLOTHES:
                     self.show_centered_message("错误", f"未知物品: {itype}", QMessageBox.Warning)
                     return True
                 items.append({'type': itype, 'amount': qty})
@@ -6855,13 +9361,15 @@ class Firefly(QWidget):
                     self.show_centered_message("错误", f"未找到用户 {user_spec}", QMessageBox.Warning)
                     return True
 
+            # 遍历每个目标用户
             for u in target_users:
-                inv = u  # 单机用户数据即 inventory（包含 balance/credit等）
+                inv = u  # 单机用户数据即 inventory
                 items_desc = []
-                # 记录统计变动
+                # ★ 修改点2：初始化所有增量统计变量
                 credit_delta = 0
                 cake_delta = 0
-                stats_delta = {}
+                ticket_delta = 0
+                jade_delta = 0
 
                 for item in items:
                     itype = item['type']
@@ -6876,9 +9384,14 @@ class Firefly(QWidget):
                             inv['credit'] = -99999999
                         credit_delta -= amount
                         items_desc.append(f"信用点 x{amount}")
-                    elif itype == 'ticket':
+                    elif itype in ('ticket', 'star_rail_tickets'):  # ★ 同时支持两种写法
                         inv['star_rail_tickets'] = inv.get('star_rail_tickets', 0) - amount
+                        ticket_delta -= amount
                         items_desc.append(f"星铁专票 x{amount}")
+                    elif itype == 'jade':  # ★ 新增星琼支持
+                        inv['jade'] = inv.get('jade', 0) - amount
+                        jade_delta -= amount
+                        items_desc.append(f"星琼 x{amount}")
                     else:  # 时装
                         if amount > 0:
                             owned = inv.get('owned_clothes', ['normal'])
@@ -6889,28 +9402,29 @@ class Firefly(QWidget):
                                 items_desc.append(f"时装 [{clothes_name}]")
                         # 时装扣除不影响统计
 
-                # ★ 更新统计（仅当扣除了 credit 或 cake）
-                if credit_delta != 0 or cake_delta != 0:
-                    # 月度统计
+                # ★ 修改点3：更新月度统计（包含 jade 和 ticket）
+                if credit_delta != 0 or cake_delta != 0 or ticket_delta != 0 or jade_delta != 0:
                     self.check_month_reset()
                     if 'monthly_credit_gained' in u:
                         u['monthly_credit_gained'] += credit_delta
                     if 'monthly_cake_gained' in u:
                         u['monthly_cake_gained'] += cake_delta
-                    # redeem_stats
+                    if 'monthly_jade_gained' in u:  # 新增
+                        u['monthly_jade_gained'] += jade_delta
+                    if 'monthly_ticket_gained' in u:  # 新增
+                        u['monthly_ticket_gained'] += ticket_delta
+                    # 可选：扩展 redeem_stats（保留原逻辑）
                     stats = u.setdefault('redeem_stats', {})
                     if credit_delta != 0:
                         stats['credit'] = stats.get('credit', 0) + credit_delta
                     if cake_delta != 0:
                         stats['cake'] = stats.get('cake', 0) + cake_delta
-                    # 确保 total 统计不会为负（可选，但不强制）
-                    # 如果用户是当前用户，更新内存并保存
-                    if u.get('userid') == self.current_user.get('userid'):
-                        self._save_current_user()
-                    else:
-                        self.save_user_data(u)
+                    if jade_delta != 0:
+                        stats['jade'] = stats.get('jade', 0) + jade_delta
+                    if ticket_delta != 0:
+                        stats['ticket'] = stats.get('ticket', 0) + ticket_delta
 
-                # 保存用户数据（已经通过上面保存，但若没有统计变动则仍需保存扣除的物品）
+                # 保存用户数据
                 if u.get('userid') == self.current_user.get('userid'):
                     self._save_current_user()
                 else:
@@ -6922,6 +9436,7 @@ class Firefly(QWidget):
                 else:
                     mail_content = "管理员执行了物品扣除操作，但未影响您的任何物品。"
                 send_mail(u, "物品扣除通知", mail_content, [])
+
                 # 如果操作的是自己，刷新界面
                 if u.get('userid') == self.current_user.get('userid'):
                     self.update_bag_display()
@@ -7027,9 +9542,9 @@ class Firefly(QWidget):
         """
         兑换码窗口输入处理（支持命令）
         - 如果输入以 '/' 开头，作为命令处理：
-            - /help、/move 本地处理
-            - 联机管理员命令发送到服务端
-            - /revoke 特殊处理：禁止对自己使用（@s 或自己的标识）
+            · /help、/move、/debug 本地处理
+            · 联机模式：其他命令发送到服务端
+            · 单机模式：其他命令调用 process_admin_command 本地执行
         - 否则作为兑换码处理（联机发送 redeem_code 请求，单机本地验证并发放）
         """
         dialog = getattr(self, '_redeem_dialog', None)
@@ -7045,12 +9560,11 @@ class Firefly(QWidget):
             parts = code.split()
             cmd = parts[0].lower()
 
-            # ----- 帮助（单机/联机通用） -----
+            # ----- 本地通用命令（单机/联机均本地处理） -----
             if cmd == '/help':
                 self.show_help()
                 return
 
-            # ----- /move（单机本地功能） -----
             if cmd == '/move':
                 if not self.allow_move:
                     self.show_centered_message("提示", "请先在右键菜单中勾选“允许移动”", QMessageBox.Warning)
@@ -7062,96 +9576,36 @@ class Firefly(QWidget):
                     self.start_random_move()
                 return
 
-            if cmd in ('/mute', '/unmute', '/function'):
-                if not self.mp_client.connected:
-                    self.show_centered_message("提示", "该命令仅适用于联机模式", QMessageBox.Warning)
+            # ----- 仅 debugger 可用的调试命令 -----
+            if cmd == '/debug':
+                if not self.is_debugger:
+                    self.show_centered_message("提示", "无效指令", QMessageBox.Warning)
                     return
-                if self.mp_client.server_permission != 'admin':
-                    self.show_centered_message("提示", "只有管理员可以使用此命令", QMessageBox.Warning)
-                    return
-                # 禁止对自己操作
-                if cmd in ('/mute', '/unmute') and len(parts) >= 2:
-                    user = parts[1]
-                    if user == '@s' or user == (self.online_name or self.current_user['username']):
-                        self.show_centered_message("提示", "不能对自己使用此命令", QMessageBox.Warning)
-                        return
-                self.mp_client.send_command(code)
-                return
-
-            # ----- /revoke 特殊处理（禁止对自己） -----
-            if cmd == '/revoke' and not (len(parts) >= 3 and parts[1].lower() == 'code'):
-                if len(parts) < 3:
-                    self.show_centered_message("错误", "格式: /revoke <用户> <物品:数量&物品...>", QMessageBox.Warning)
-                    return
-                user_spec = parts[1]
-
-                # 检查是否为自己（@s）
-                if user_spec == '@s':
-                    self.show_centered_message("提示", "不能对自己使用 /revoke 命令", QMessageBox.Warning)
-                    return
-
-                # 联机模式：检查是否匹配自己的标识，并发送到服务端
-                if self.mp_client.connected:
-                    # 权限检查（联机）
-                    if self.mp_client.server_permission != 'admin':
-                        self.show_centered_message("提示", "只有管理员可以使用此命令", QMessageBox.Warning)
-                        return
-                    my_name = self.online_name or self.current_user['username']
-                    my_userid = self.current_user['userid']
-                    my_server_uid = self.mp_client.server_uid
-                    if user_spec == my_name or user_spec == my_userid or user_spec == my_server_uid:
-                        self.show_centered_message("提示", "不能对自己使用 /revoke 命令", QMessageBox.Warning)
-                        return
-                    # 发送到服务端
-                    self.mp_client.send_command(code)
-                    return
-
-                # 单机模式：调用本地处理（已包含权限检查）
-                else:
-                    # 单机模式下，检查是否为自己
-                    my_userid = self.current_user['userid']
-                    my_username = self.current_user['username']
-                    if user_spec == '@a':
-                        self.show_centered_message("提示", "单机模式下不允许使用 @a，请指定具体用户",
-                                                   QMessageBox.Warning)
-                        return
-                    if user_spec == my_username or user_spec == my_userid:
-                        self.show_centered_message("提示", "不能对自己使用 /revoke 命令", QMessageBox.Warning)
-                        return
-                    # 权限检查
-                    if not self.current_user.get('uid', '').lower().startswith('admin'):
-                        self.show_centered_message("提示", "只有管理员可以使用此命令", QMessageBox.Warning)
-                        return
-                    # 调用单机命令处理器（process_admin_command 会处理 /revoke 并扣除物品）
-                    self.process_admin_command(code)
-                    return
-
-            # ----- 以下命令需要联机模式 -----
-            if not self.mp_client.connected:
-                self.show_centered_message("提示", "该命令仅适用于联机模式，请先加入服务器。", QMessageBox.Warning)
-                return
-
-            # ----- 权限检查（联机） -----
-            if self.mp_client.server_permission != 'admin':
-                self.show_centered_message("提示", "只有管理员可以使用此命令", QMessageBox.Warning)
-                return
-
-            # ----- 不允许对自己的命令列表（如 /op /deop 等） -----
-            no_self_cmds = ['/op', '/deop', '/ban', '/unban', '/kick']
-            if cmd in no_self_cmds:
                 if len(parts) < 2:
-                    self.show_centered_message("错误", f"用法: {cmd} <用户>", QMessageBox.Warning)
+                    self.show_centered_message("提示", "用法: /debug on 或 /debug off")
                     return
-                user_spec = parts[1]
-                my_name = self.online_name or self.current_user['username']
-                my_userid = self.current_user['userid']
-                my_server_uid = self.mp_client.server_uid
-                if user_spec == '@s' or user_spec == my_name or user_spec == my_userid or user_spec == my_server_uid:
-                    self.show_centered_message("提示", "不能对自己使用此命令", QMessageBox.Warning)
+                mode = parts[1].lower()
+                if mode not in ('on', 'off'):
+                    self.show_centered_message("提示", "参数必须为 on 或 off")
                     return
+                if self.debug_mode == (mode == 'on'):
+                    self.show_centered_message("提示", f"联机功能已经是 {'启用' if self.debug_mode else '禁用'} 状态")
+                    return
+                self.debug_mode = (mode == 'on')
+                os.environ['FIREFLY_DEBUG_MODE'] = mode
+                self.create_menu()
+                self.show_centered_message("提示", f"联机功能已{'启用' if self.debug_mode else '禁用'}")
+                return
 
-            # ----- 发送命令到服务端（联机） -----
-            self.mp_client.send_command(code)
+            # ----- 其他命令：单机本地处理，联机发送到服务端 -----
+            if self.mp_client.connected:
+                # 联机模式：直接发送到服务端（服务端进行权限校验和执行）
+                self.mp_client.send_command(code)
+            else:
+                # 单机模式：调用本地命令处理器（process_admin_command）
+                # 若返回 False，说明命令未被识别或处理失败
+                if not self.process_admin_command(code):
+                    self.show_centered_message("提示", "未知命令或该命令不支持单机模式", QMessageBox.Warning)
             return
 
         # ---------- 兑换码处理（非命令） ----------
@@ -7215,6 +9669,12 @@ class Firefly(QWidget):
                 items.append({"type": "clothes", "id": item["id"]})
             elif itype == "star_rail_ticket":
                 items.append({"type": "star_rail_ticket", "amount": item["amount"]})
+            elif itype == "jade":
+                items.append({"type": "jade", "amount": item["amount"]})
+                # 累加统计
+                self.current_user["monthly_jade_gained"] = self.current_user.get("monthly_jade_gained", 0) + item[
+                    "amount"]
+                self.current_user["total_jade_gained"] = self.current_user.get("total_jade_gained", 0) + item["amount"]
 
         self.send_mail_to_user(self.current_user, "兑换码奖励",
                                f"成功使用兑换码 {code}，获得以下物品。", items)
@@ -7607,6 +10067,58 @@ class Firefly(QWidget):
                 self.label.setMovie(self.movie)
                 self.movie.start()
 
+    def _check_and_grant_achievement(self):
+        """检查月度成就并发放奖励（仅联机模式）"""
+        # ★ 修改：单机模式直接返回，不执行月度成就
+        if not self.mp_client.connected:
+            return  # 单机不发放月度奖励
+
+        if not self.current_user:
+            return
+
+        import calendar
+        now = datetime.now()
+        current_month = now.strftime('%Y-%m')
+        days_in_month = calendar.monthrange(now.year, now.month)[1]
+
+        # 目标值
+        credit_target = 7200 * days_in_month
+        sign_target = days_in_month
+        jade_target = 1600
+        cake_target = 72
+
+        # 当前值
+        credit_gained = self.current_user.get('monthly_credit_gained', 0)
+        sign_days = self.current_user.get('monthly_sign_days', 0)
+        jade_gained = self.current_user.get('monthly_jade_gained', 0)
+        cake_gained = self.current_user.get('monthly_cake_gained', 0)
+
+        # 检查是否全部达标
+        if (credit_gained >= credit_target and
+                sign_days >= sign_target and
+                jade_gained >= jade_target and
+                cake_gained >= cake_target):
+
+            # 检查是否已发放
+            if self.current_user.get('last_achievement_month') == current_month:
+                return
+
+            # 发放 10 张星铁专票
+            items = [{"type": "star_rail_ticket", "amount": 10}]
+            self.send_mail_to_user(
+                self.current_user,
+                "🎉 月度成就达成！",
+                "恭喜你！本月所有养成进度均已达成 100%，获得 10 张星铁专票作为奖励！",
+                items
+            )
+            self.current_user['last_achievement_month'] = current_month
+            self._save_current_user()
+            show_notification_async(
+                title="流萤桌宠",
+                message="🎉 恭喜你达成月度全成就！请查看邮箱领取奖励。",
+                duration=3
+            )
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             try:
@@ -7637,31 +10149,25 @@ class Firefly(QWidget):
         return last_year == datetime.now().year
 
     def send_birthday_mail(self):
+        """发送生日邮件（单机：5200信用点；联机：由服务端处理）"""
         # 单机模式：直接本地发送
         if not self.mp_client.connected:
-            # 原逻辑
-            uid = self.current_user.get("uid", "").lower()
-            if uid.startswith("admin"):
-                greeting_name = "管理员"
-            elif uid.startswith("trailblazer"):
-                greeting_name = "开拓者"
-            else:
-                greeting_name = "用户"
-            items = [
-                {"type": "credit", "amount": 5200},
-                {"type": "star_rail_ticket", "amount": 1}
-            ]
+            current_year = datetime.now().year
+            if self.current_user.get('birthday_reward_year') == current_year:
+                return  # 已发放
+            # ★ 修改：单机生日奖励改为 5200 信用点
+            items = [{"type": "credit", "amount": 5200}]
             self.send_mail_to_user(
                 self.current_user,
                 "流萤的祝福",
-                f"{greeting_name}，生日快乐！",
+                f"{self.current_user.get('username', '用户')}，生日快乐！",
                 items
             )
-            self.current_user["last_birthday_greet_year"] = datetime.now().year
+            self.current_user['birthday_reward_year'] = current_year
             self._save_current_user()
             return
 
-        # 联机模式：请求服务端发送
+        # 联机模式：请求服务端发送（服务端逻辑保持不变，发放320星琼）
         self.mp_client._send({
             'type': 'request_birthday_mail',
             'data': {
@@ -7801,6 +10307,67 @@ class Firefly(QWidget):
         action.setToolTip(tooltip)
         return action
 
+    def _reset_all_resources(self):
+        """重新下载所有需要资源的资源包（覆盖原有）"""
+
+        def collect_resource_items(items):
+            result = []
+            for item in items:
+                if item.get('resource_required', False):
+                    result.append(item)
+                if 'children' in item:
+                    result.extend(collect_resource_items(item['children']))
+            return result
+
+        to_download = collect_resource_items(self.server_custom_menu)
+        if not to_download:
+            QMessageBox.information(self, "提示", "没有需要下载的资源包。")
+            return
+
+        # 自定义深色居中确认对话框
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("确认重置")
+        msg_box.setText(f"将重新下载 {len(to_download)} 个资源包（覆盖已有），确定继续吗？")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+            }
+            QMessageBox QLabel {
+                color: #E0E0E0;
+                background-color: #1E1E1E;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton:disabled {
+                background-color: #666;
+            }
+        """)
+        # 居中
+        parent_geo = self.geometry()
+        x = parent_geo.x() + (parent_geo.width() - msg_box.width()) // 2
+        y = parent_geo.y() + (parent_geo.height() - msg_box.height()) // 2
+        msg_box.move(x, y)
+
+        reply = msg_box.exec_()
+        if reply != QMessageBox.Yes:
+            return
+
+        for item in to_download:
+            self.download_resource(item)
+
     def contextMenuEvent(self, event):
         if self.is_moving:
             return  # 移动中不弹出菜单
@@ -7825,13 +10392,15 @@ class Firefly(QWidget):
         try:
             menu = RoundedMenu(self)
             menu.setToolTipsVisible(True)
-            action0 = QAction(f'Firefly_Win64_v{CLIENT_VERSION}_G', self)
+            if self.is_debugger:
+                action0 = QAction(f'Firefly_Win64_v{CLIENT_VERSION}_G [debug]', self)
+            else:
+                action0 = QAction(f'Firefly_Win64_v{CLIENT_VERSION}_G', self)
             action0.setDisabled(True)
             action1 = QAction('🍖 投喂', self)  # 添加 emoji
             action2 = QAction('💖 比心', self)  # 添加 emoji
             action3 = QAction('😴 睡觉', self)  # 添加 emoji
             action_new = QAction('🔄 检查更新', self)  # 添加 emoji
-            action9 = QAction('🔧 更多功能', self)  # 添加 emoji
             action100 = QAction('💬 在线对话', self)
             if not self.ai_enabled:
                 action100.setEnabled(False)
@@ -7852,44 +10421,55 @@ class Firefly(QWidget):
             shop_action = QAction('🛒 商店', self)  # 添加 emoji
             shop_action.triggered.connect(self.open_shop)
             menu.addAction(shop_action)
+
+            # 背包子菜单
             bag = RoundedMenu(menu)
             bag.setTitle("🎒 背包")
             bag.setToolTipsVisible(True)
-
-            # 仅添加数量大于0的物品
             items_added = False
             if balance > 0:
                 action_backpack = QAction(f'🍰 橡木蛋糕卷：{balance}个', self)
                 action_backpack.setDisabled(True)
-                action_backpack.setToolTip("流萤最爱吃的食物")
                 bag.addAction(action_backpack)
                 items_added = True
-
             if credit > 0:
                 action_credit = QAction(f'💰 信用点：{credit}', self)
                 action_credit.setDisabled(True)
-                action_credit.setToolTip("用于商店购买物品")
                 bag.addAction(action_credit)
                 items_added = True
-
             if tickets > 0:
                 action_tickets = QAction(f'🎫 星铁专票：{tickets}张', self)
                 action_tickets.setDisabled(True)
-                action_tickets.setToolTip("来自列车的祝福")
                 bag.addAction(action_tickets)
                 items_added = True
-
+            jade = inv.get('jade', 0)
+            if jade > 0:
+                action_jade = QAction(f'💎 星琼：{jade}', self)
+                action_jade.setDisabled(True)
+                bag.addAction(action_jade)
+                items_added = True
+            custom_items = inv.get('custom_items', {})
+            if custom_items:
+                if items_added:
+                    bag.addSeparator()
+                for cid, cnt in custom_items.items():
+                    info = next((it for it in self.server_custom_items if it.get('id') == cid), None)
+                    name = info.get('name', cid) if info else cid
+                    icon = info.get('icon', '📦') if info else '📦'
+                    action = QAction(f'{icon} {name} × {cnt}', self)
+                    action.setDisabled(True)
+                    bag.addAction(action)
+                    items_added = True
             if not items_added:
                 empty_action = QAction("暂无物品", self)
                 empty_action.setDisabled(True)
                 bag.addAction(empty_action)
-
             menu.addMenu(bag)
 
+            # 时装子菜单
             clothes_menu = RoundedMenu(menu)
             clothes_menu.setTitle("👗 时装")
             clothes_menu.setToolTipsVisible(True)
-            # ❌ 删掉这行：owned = self.current_user.get("owned_clothes", ["normal"])
             for clothes_id, info in AVAILABLE_CLOTHES.items():
                 action = QAction(info["name"], self)
                 if clothes_id in owned:
@@ -7900,11 +10480,13 @@ class Firefly(QWidget):
                 clothes_menu.addAction(action)
             menu.addMenu(clothes_menu)
 
+            # 音量子菜单
             volume_menu = RoundedMenu("🔊 音量")
             volume_action = create_volume_menu(self)
             volume_menu.addAction(volume_action)
             menu.addMenu(volume_menu)
 
+            # 签到
             if self.is_signed_today():
                 sign_action = menu.addAction("✅ 今日已签到")
                 sign_action.setDisabled(True)
@@ -7912,58 +10494,87 @@ class Firefly(QWidget):
                 sign_action = menu.addAction("📅 每日签到")
                 sign_action.triggered.connect(self.sign_in)
             menu.addAction(sign_action)
-            # ---------- 小三月的秘密基地 ----------
-            OPEN_TIME = datetime(2026, 8, 6, 12, 0, 0)
-            now = datetime.now()
-            is_open = now >= OPEN_TIME
 
-            icon_path = os.path.join("assets", "images", "MARCH_7TH.png")
-            tooltip = "为所有崩铁玩家打造了一个属于我们的新世界！——小三月日记"
+            # 小三月的秘密基地（单机）
+            if not self.mp_client.connected:
+                OPEN_TIME = datetime(2026, 8, 6, 12, 0, 0)
+                now = datetime.now()
+                icon_path = os.path.join("assets", "images", "MARCH_7TH.png")
+                tooltip = "为所有崩铁玩家打造了一个属于我们的新世界！——小三月日记"
 
-            if os.path.exists(icon_path):
-                action_text = "小三月日记" + ("" if is_open else " 🔒")
-                self._secret_action = self.create_icon_text_action(
-                    action_text, icon_path, menu,
-                    enabled=is_open,
-                    tooltip=tooltip if is_open else ""
-                )
-            else:
-                # 降级方案：普通 QAction（无图标）
-                self._secret_action = QAction(self)
-                self._secret_action.setText("小三月的秘密基地" + ("" if is_open else " 🔒"))
-                self._secret_action.setEnabled(is_open)
-                self._secret_action.setToolTip(tooltip if is_open else "")
-
-            self._secret_action.triggered.connect(lambda: webbrowser.open("https://blog.mar7th.cn/"))
-            menu.addAction(self._secret_action)
-
-            # 悬停动态提示（仅当未开放时显示倒计时）
-            def on_menu_hovered(action):
-                if action is self._secret_action and not is_open:
-                    # 未开放，启动计时器更新倒计时
-                    if not self._secret_timer.isActive():
-                        self._secret_timer.start()
-                    self._update_secret_tooltip()
-                    self._secret_hovered = True
+                if self._website_status is False:
+                    is_open = False
+                    display_text = "小三月日记(维护中)"
+                    tooltip_text = self._website_title if self._website_title else "公测延期，敬请期待"
+                elif self._website_status is True:
+                    is_open = True
+                    display_text = "小三月日记"
+                    tooltip_text = tooltip
                 else:
-                    # 已开放或悬停其他项，停止计时器并隐藏提示
+                    if now < OPEN_TIME:
+                        is_open = False
+                        display_text = "小三月日记 🔒"
+                        tooltip_text = ""
+                    else:
+                        is_open = False
+                        display_text = "小三月日记(检测中...)"
+                        tooltip_text = "正在检测网站状态..."
+
+                if os.path.exists(icon_path):
+                    self._secret_action = self.create_icon_text_action(
+                        display_text, icon_path, menu,
+                        enabled=is_open,
+                        tooltip=tooltip_text
+                    )
+                else:
+                    self._secret_action = QAction(self)
+                    self._secret_action.setText(display_text)
+                    self._secret_action.setEnabled(is_open)
+                    self._secret_action.setToolTip(tooltip_text)
+
+                self._secret_action.triggered.connect(lambda: webbrowser.open("https://blog.mar7th.cn/"))
+                menu.addAction(self._secret_action)
+
+                def on_menu_hovered(action):
+                    pos = QCursor.pos()
+                    if action is self._secret_action:
+                        now = datetime.now()
+                        if self._website_status is None and now < OPEN_TIME:
+                            if not self._secret_timer.isActive():
+                                self._secret_timer.start()
+                            self._update_secret_tooltip()
+                            self._secret_hovered = True
+                        else:
+                            self._secret_timer.stop()
+                            if self._website_status is False:
+                                QToolTip.showText(pos,
+                                                  self._website_title if self._website_title else "公测延期，敬请期待",
+                                                  self)
+                            elif self._website_status is True:
+                                QToolTip.hideText()
+                            else:
+                                if now >= OPEN_TIME:
+                                    QToolTip.showText(pos, "正在检测网站状态...", self)
+                            self._secret_hovered = True
+                    else:
+                        if self._secret_timer.isActive():
+                            self._secret_timer.stop()
+                        QToolTip.hideText()
+                        self._secret_hovered = False
+
+                menu.hovered.connect(on_menu_hovered)
+
+                def on_menu_hide():
                     if self._secret_timer.isActive():
                         self._secret_timer.stop()
                     QToolTip.hideText()
                     self._secret_hovered = False
 
-            menu.hovered.connect(on_menu_hovered)
+                menu.aboutToHide.connect(on_menu_hide)
 
-            def on_menu_hide():
-                # 菜单隐藏时停止计时器并隐藏提示
-                if self._secret_timer.isActive():
-                    self._secret_timer.stop()
-                QToolTip.hideText()
-                self._secret_hovered = False
-
-            menu.aboutToHide.connect(on_menu_hide)
+            # AI唱歌子菜单
             sing = RoundedMenu(menu)
-            sing.setTitle("🎤 AI唱歌&二创")  # 添加 emoji
+            sing.setTitle("🎤 AI唱歌&二创")
             sing.addAction("🎵 AI合唱-不眠之夜", self.sing_and_dance)
             sing.addAction("🎶 AI独唱-打上花火", self.sing_and_dance2)
             sing.addAction("🎙️ AI独唱-5:20AM", self.sing_and_dance3)
@@ -7971,8 +10582,9 @@ class Firefly(QWidget):
             sing.addAction("⏹️ 停止音乐", self.stop_music)
             menu.addMenu(sing)
 
+            # 更改桌宠大小 + 允许移动
             mouse_GUI = RoundedMenu(menu)
-            mouse_GUI.setTitle("🐭 更改桌宠大小")  # 添加 emoji
+            mouse_GUI.setTitle("🐭 更改桌宠大小")
             mouse_GUI.addAction("🔍 更改：大号", self.change_GUI_to_Large)
             mouse_GUI.addAction("🖥️ 更改：默认", self.change_GUI_to_normal)
             mouse_GUI.addAction("📏 更改：中号", self.change_GUI_to_medium)
@@ -7983,75 +10595,173 @@ class Firefly(QWidget):
             move_action.triggered.connect(self.toggle_move)
             mouse_GUI.addAction(move_action)
             menu.addMenu(mouse_GUI)
-            menu.addSeparator()
-            report_action = QAction('📊 当月收获报告', self)
-            report_action.triggered.connect(self.generate_monthly_report)
-            menu.addAction(report_action)
 
+            menu.addSeparator()
+            if self.mp_client.connected:
+                report_action = QAction('📊 当月收获报告', self)
+                report_action.triggered.connect(self.generate_monthly_report)
+                menu.addAction(report_action)
+
+            # 修改指针子菜单
             mouse = RoundedMenu(menu)
-            mouse.setTitle("🖱️ 修改指针")  # 添加 emoji
+            mouse.setTitle("🖱️ 修改指针")
             mouse.addAction("🪲 流萤指针", lambda: self.set_cursor_style("Firefly"))
             mouse.addAction("🤖 萨姆指针", lambda: self.set_cursor_style("Sam"))
             mouse.addAction("🚫 停用指针", lambda: self.set_cursor_style("None"))
             menu.addMenu(mouse)
 
-            menu.addAction(action9)
+            # ========== 原"更多功能"改为工具箱子菜单 ==========
+            toolbox_menu = RoundedMenu(self)
+            toolbox_menu.setTitle("🧰 工具箱")
+            toolbox_menu.setToolTipsVisible(True)
+
+            # 子选项1：更多工具（原功能）
+            more_tools_action = QAction("🛠️ 更多工具", self)
+            more_tools_action.triggered.connect(self.open_settings_tool)
+            toolbox_menu.addAction(more_tools_action)
+
+            # 子选项2：清空日志
+            clear_log_action = QAction("🗑️ 清理日志", self)
+            clear_log_action.triggered.connect(self.clear_logs)
+            toolbox_menu.addAction(clear_log_action)
+
+            menu.addMenu(toolbox_menu)
+
+            # 检查更新（单独保留）
             menu.addAction(action_new)
 
+            # 在线对话
             menu.addAction(action100)
 
-            action_redeem = QAction('🎟️使用兑换码', self)  # 添加 emoji
+            # 兑换码、修改用户名、兑换明细
+            action_redeem = QAction('🎟️ 使用兑换码', self)
             if not self.mp_client.connected:
                 change_name_action = menu.addAction("✏️ 修改用户名")
                 change_name_action.triggered.connect(self.change_username_single)
-            action_history = QAction('📋 兑换明细', self)  # 添加 emoji
+            action_history = QAction('📋 兑换明细', self)
             menu.addAction(action_redeem)
             menu.addAction(action_history)
-            mp_menu = RoundedMenu(menu)
-            if self.mp_client.connected:
-                latency = self.mp_client._latest_latency_ms
-                if latency < 0:
-                    latency = 0
-                if latency <= 40:
-                    icon = self._get_color_icon("green")
-                elif latency <= 119:
-                    icon = self._get_color_icon("yellow")
-                else:
-                    icon = self._get_color_icon("red")
-                mp_menu.setIcon(icon)
-                mp_menu.setTitle(f"🌐 多人联机 (延迟{latency}ms)")
 
-                # ---------- 服务器名称（灰色不可点击） ----------
-                name_action = mp_menu.addAction(self.server_display_name)
-                name_action.setEnabled(False)
-                # 可设置灰色字体，但 QAction 默认 disabled 时即为灰色，无需额外样式
-
-                # ---------- 聊天室 ----------
-                chat_action = mp_menu.addAction("💬 聊天室")
-                chat_action.triggered.connect(self.open_chat_window)
-                chat_action.setEnabled(self.chat_enabled)
-                if not self.chat_enabled:
-                    chat_action.setToolTip("⚠此功能已被服务器禁止！")
-                else:
-                    chat_action.setToolTip("")
-
-                # 改名、退出等其它动作保持不变...
-                rename_action = mp_menu.addAction("✏ 修改昵称")
-                rename_action.triggered.connect(self.change_online_name)
-                leave_action = mp_menu.addAction("🚪 退出游戏")
-                leave_action.triggered.connect(self.disconnect_server)
+            # 多人联机子菜单
+            # 多人联机子菜单
+            if self.is_debugger and not self.debug_mode:
+                # 调试模式且未开启联机 → 禁用
+                mp_menu = RoundedMenu(menu)
+                mp_menu.setTitle("🌐 多人联机 (调试模式已禁用)")
+                disabled_action = QAction("联机功能已禁用", self)
+                disabled_action.setEnabled(False)
+                mp_menu.addAction(disabled_action)
+                menu.addMenu(mp_menu)
             else:
-                mp_menu.setTitle("🌐 多人联机")
-                join_action = mp_menu.addAction("🎮 加入游戏")
-                join_action.triggered.connect(self.show_join_dialog)
-                join_action2 = mp_menu.addAction("🖥️ 获取服务端")
-                join_action2.triggered.connect(self.get_server)
-            menu.addMenu(mp_menu)
+                # 正常联机菜单（保持不变）
+                mp_menu = RoundedMenu(menu)
+                if self.mp_client.connected:
+                    latency = self.mp_client._latest_latency_ms
+                    if latency < 0:
+                        latency = 0
+                    if latency <= 40:
+                        icon = self._get_color_icon("green")
+                    elif latency <= 119:
+                        icon = self._get_color_icon("yellow")
+                    else:
+                        icon = self._get_color_icon("red")
+                    mp_menu.setIcon(icon)
+                    mp_menu.setTitle(f"🌐 多人联机 (延迟{latency}ms)")
+                    name_action = mp_menu.addAction(self.server_display_name)
+                    name_action.setEnabled(False)
+                    chat_action = mp_menu.addAction("💬 聊天室")
+                    chat_action.triggered.connect(self.open_chat_window)
+                    chat_action.setEnabled(self.chat_enabled)
+                    if not self.chat_enabled:
+                        chat_action.setToolTip("⚠此功能已被服务器禁止！")
+                    rename_action = mp_menu.addAction("✏️ 修改昵称")
+                    rename_action.triggered.connect(self.change_online_name)
+                    player_list_action = mp_menu.addAction("📋 成员列表")
+                    player_list_action.triggered.connect(self.show_player_list)
+                    leave_action = mp_menu.addAction("🚪 退出游戏")
+                    leave_action.triggered.connect(self.disconnect_server)
+                else:
+                    mp_menu.setTitle("🌐 多人联机")
+                    join_action = mp_menu.addAction("🎮 加入游戏")
+                    join_action.triggered.connect(self.show_join_dialog)
+                    join_action2 = mp_menu.addAction("🖥️ 获取服务端")
+                    join_action2.triggered.connect(self.get_server)
+                menu.addMenu(mp_menu)
+
+            # 服务器内容子菜单（动态）
+            if self.server_custom_menu:
+                server_menu = RoundedMenu(self)
+                server_menu.setTitle("第三方的服务器功能")
+                server_menu.setToolTipsVisible(True)
+                info_action = QAction("以下功能均来自服务器，与游戏作者无关", self)
+                info_action.setEnabled(False)
+                server_menu.addAction(info_action)
+                server_menu.addSeparator()
+
+                def has_resource_required(items):
+                    for item in items:
+                        if item.get('resource_required', False):
+                            return True
+                        if 'children' in item and has_resource_required(item['children']):
+                            return True
+                    return False
+
+                if has_resource_required(self.server_custom_menu):
+                    reset_action = QAction("🔧 资源重置", self)
+                    reset_action.setToolTip("重新下载所有需要资源的资源包（覆盖原有）")
+                    reset_action.triggered.connect(self._reset_all_resources)
+                    server_menu.addAction(reset_action)
+                    server_menu.addSeparator()
+
+                def add_menu_items(parent_menu, items):
+                    for item in items:
+                        expiry = item.get('expiry')
+                        if expiry:
+                            try:
+                                dt = datetime.fromisoformat(expiry)
+                                if datetime.now(dt.tzinfo) >= dt:
+                                    continue
+                            except:
+                                pass
+
+                        label = item.get('label', '未知')
+                        res_required = item.get('resource_required', False)
+                        res_exists = self._resource_exists(item.get('id', ''))
+                        if res_required and not res_exists:
+                            label += " (未下载)"
+                        if item.get('type') == 'gacha':
+                            remaining = self._get_remaining_text(expiry)
+                            if remaining:
+                                label += remaining
+
+                        children = item.get('children', [])
+                        if children:
+                            sub_menu = RoundedMenu(parent_menu)
+                            sub_menu.setTitle(label)
+                            if res_required and not res_exists:
+                                sub_menu.setEnabled(False)
+                                sub_menu.setToolTip("资源未下载，无法使用此功能")
+                            add_menu_items(sub_menu, children)
+                            parent_menu.addMenu(sub_menu)
+                        else:
+                            action = self._create_server_menu_item(item)
+                            action.setText(label)
+                            if res_required and not res_exists:
+                                action.setEnabled(False)
+                                action.setToolTip(action.toolTip() + " 你需要先下载服务器资源包才能使用此功能!")
+                            action.triggered.connect(lambda checked, it=item: self._on_server_menu_clicked(it))
+                            parent_menu.addAction(action)
+
+                add_menu_items(server_menu, self.server_custom_menu)
+                menu.addMenu(server_menu)
+
+            # 用户信息
             user_info = menu.addAction(f"👤当前登录：{self.get_display_uid()}")
             user_info.setDisabled(True)
             menu.addAction(user_info)
 
-            exit_all_action = QAction('🚪 退出桌宠', self)  # 添加 emoji
+            # 退出桌宠
+            exit_all_action = QAction('🚪 退出桌宠', self)
             exit_all_action.triggered.connect(self.show_exit_dialog)
             menu.addAction(exit_all_action)
 
@@ -8059,7 +10769,6 @@ class Firefly(QWidget):
             action1.triggered.connect(self.feed)
             action2.triggered.connect(self.heart)
             action3.triggered.connect(self.sleep)
-            action9.triggered.connect(self.open_settings_tool)
             action_new.triggered.connect(self.check_new)
             action100.triggered.connect(self.open_AI)
             action_redeem.triggered.connect(self.redeem_code)
@@ -8073,22 +10782,85 @@ class Firefly(QWidget):
         finally:
             QApplication.restoreOverrideCursor()
 
+    def clear_logs(self):
+        """
+        清空客户端日志文件（firefly_crash.log 和 firefly_client.log）
+        """
+        # 创建自定义 QMessageBox 并应用深色样式
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("确认清理日志")
+        msg_box.setText("确定要清理所有日志文件吗？\n（这将清理 crash 日志和客户端日志）")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+
+        # 应用深色样式（与 show_centered_message 保持一致）
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: #1E1E1E;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #888888;
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45A049;
+            }
+            QPushButton[text="No"] {
+                background-color: #666666;
+            }
+            QPushButton[text="No"]:hover {
+                background-color: #888888;
+            }
+        """)
+
+        # 居中显示
+        screen_center = QApplication.primaryScreen().availableGeometry().center()
+        msg_box.move(screen_center - msg_box.rect().center())
+
+        reply = msg_box.exec_()
+        if reply == QMessageBox.No:
+            return
+
+        log_files = ["firefly_crash.log", "firefly_client.log"]
+        cleared = []
+        for f in log_files:
+            if os.path.exists(f):
+                try:
+                    open(f, 'w').close()
+                    cleared.append(f)
+                except Exception as e:
+                    print(f"清理 {f} 失败: {e}")
+
+        if cleared:
+            self.show_centered_message("成功", f"已清理日志文件：{', '.join(cleared)}", QMessageBox.Information)
+        else:
+            self.show_centered_message("提示", "没有找到可清理的日志文件", QMessageBox.Information)
+
     def _update_secret_tooltip(self):
-        """更新秘密基地菜单项的悬浮提示（动态倒计时）"""
+        """更新小三月日记的倒计时悬停提示（仅在未到开放时间且未检测完成时）"""
         if not self._secret_action or not self._secret_hovered:
+            return
+        # 如果已经检测完成，停止定时器并隐藏提示
+        if self._website_status is not None:
+            self._secret_timer.stop()
+            QToolTip.hideText()
             return
         now = datetime.now()
         OPEN_TIME = datetime(2026, 8, 6, 12, 0, 0)
         if now >= OPEN_TIME:
-            # 已开放，更新动作状态并停止定时器
-            self._secret_action.setEnabled(True)
-            self._secret_action.setText("小三月的秘密基地")  # 去掉🔒
-            self._secret_action.setToolTip("为所有崩铁玩家打造了一个属于我们的新世界！——小三月日记")
-            if self._secret_timer.isActive():
-                self._secret_timer.stop()
+            self._secret_timer.stop()
             QToolTip.hideText()
             return
-
         delta = OPEN_TIME - now
         days = delta.days
         hours, rem = divmod(delta.seconds, 3600)
@@ -8235,7 +11007,10 @@ class Firefly(QWidget):
             return
         menu = RoundedMenu()
         menu.setToolTipsVisible(True)
-        fuck_Manthe = menu.addAction(f"Firefly_Win64_v{CLIENT_VERSION}_G")
+        if self.is_debugger:
+            fuck_Manthe = menu.addAction(f"Firefly_Win64_v{CLIENT_VERSION}_G [debug]")
+        else:
+            fuck_Manthe = menu.addAction(f"Firefly_Win64_v{CLIENT_VERSION}_G")
         fuck_Manthe.setDisabled(True)
         feed_action = menu.addAction("🍖 投喂")
         love_action = menu.addAction("💖 比心")
@@ -8448,34 +11223,96 @@ class Firefly(QWidget):
                 pass
 
     def out_win(self):
-        # 注销全局热键
-        if hasattr(self, 'hotkey_filter'):
-            self.hotkey_filter.unregister()
-            QApplication.instance().removeNativeEventFilter(self.hotkey_filter)
-        # 停止音频
+        """
+        安全退出桌宠程序，清理所有资源并退出进程。
+        此方法会保存当前状态、关闭所有子窗口、停止音乐、注销热键，最后调用 sys.exit(0)。
+        """
+
+        # 2. 停止音乐播放
         try:
             pygame.mixer.music.stop()
             pygame.mixer.quit()
-        except:
-            pass
-        # 保存状态
+        except Exception as e:
+            print(f"[退出] 停止音乐失败: {e}")
+
+        # 3. 保存当前用户状态（动画、位置）到磁盘
         if self.current_user:
             self.current_user["last_state"] = self.persistent_state
             pos = self.pos()
             self.current_user["last_x"] = pos.x()
             self.current_user["last_y"] = pos.y()
             self._save_current_user()
-        # 隐藏窗口和托盘
+
+        # 4. 关闭所有可能打开的子窗口
+        # 4.1 聊天窗口
+        if hasattr(self, 'chat_window') and self.chat_window:
+            try:
+                self.chat_window.close()
+                self.chat_window = None
+            except Exception as e:
+                print(f"[退出] 关闭聊天窗口失败: {e}")
+
+        # 4.2 兑换码对话框
+        if hasattr(self, '_redeem_dialog') and self._redeem_dialog:
+            try:
+                self._redeem_dialog.reject()
+                self._redeem_dialog = None
+            except:
+                pass
+
+        # 4.3 抽卡页面（QWebEngineView）
+        # 在 out_win 中，关闭抽卡窗口部分
+        if hasattr(self, 'gacha_view') and self.gacha_view:
+            try:
+                self.gacha_view.close()  # 这会触发我们定义的 on_close，但因为我们 hide 并 ignore，实际不会关闭，需要强制删除
+                self.gacha_view.deleteLater()
+            except:
+                pass
+            self.gacha_view = None
+            self._current_gacha_bridge = None
+
+        # 4.4 在线列表悬浮窗
+        if hasattr(self, 'online_overlay') and self.online_overlay:
+            try:
+                self.online_overlay.hide()
+                self.online_overlay = None
+            except:
+                pass
+
+        # 4.5 强制改名对话框
+        if hasattr(self, '_rename_dialog') and self._rename_dialog:
+            try:
+                self._rename_dialog.reject()
+                self._rename_dialog = None
+            except:
+                pass
+
+        # 4.6 其他可能存在的模态对话框（商店、历史记录等）
+        # 由于它们是独立的 QDialog，退出时通常自动回收，但主动关闭更安全
+        # 这里可以根据需要遍历所有顶层窗口关闭，但为简洁，省略
+
+        # 5. 隐藏主窗口和托盘图标
         self.hide()
         if self.tray_icon:
             self.tray_icon.setVisible(False)
-        # 可选：启动清理工具（但不要杀自己）
+            try:
+                self.tray_icon = None
+            except:
+                pass
+
+        # 6. （可选）启动外部清理工具（用于杀死残留子进程）
         try:
-            subprocess.Popen(["./tools/kill_process.exe"], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
-            pass
-        # 正常退出
+            subprocess.Popen(
+                ["./tools/kill_process.exe"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            print(f"[退出] 启动清理工具失败: {e}")
+
+        # 7. 彻底退出应用程序
+        QApplication.quit()
         sys.exit(0)
 
 
@@ -8529,6 +11366,7 @@ if __name__ == "__main__":
     import signal
     firefly = None
     app = QApplication(sys.argv)
+    check_essential_resources()
     def sigint_handler(signum, frame):
         print("\n正在退出程序...")
         if hasattr(app, 'firefly') and app.firefly:
@@ -8557,6 +11395,24 @@ if __name__ == "__main__":
     current_user = auto_login_check()
 
     if current_user:
+        # ---------- 新增 debugger 检测 ----------
+        if current_user.get('userid') == 'debugger' and not os.environ.get('FIREFLY_DEBUGGER'):
+            os.environ['QTWEBENGINE_REMOTE_DEBUGGING'] = '9222'
+            os.environ['FIREFLY_DEBUGGER'] = '1'
+            # 重启程序
+            if getattr(sys, 'frozen', False):
+                program = sys.executable
+                args = []
+            else:
+                program = sys.executable
+                args = [os.path.abspath(sys.argv[0])]
+            if sys.platform == 'win32':
+                subprocess.Popen([program] + args,
+                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+            else:
+                subprocess.Popen([program] + args, start_new_session=True)
+            QApplication.quit()
+            sys.exit(0)
         # 自动登录：清理旧实例（如果有）
         if hasattr(app, 'firefly') and app.firefly:
             app.firefly.deleteLater()
@@ -8572,11 +11428,11 @@ if __name__ == "__main__":
 
 
         def on_login_success(user_data):
-            # 清理旧实例
+            login_win.accept()
+            # 正常创建 Firefly
             if hasattr(app, 'firefly') and app.firefly:
                 app.firefly.deleteLater()
                 app.firefly = None
-                QApplication.processEvents()
             app.firefly = Firefly(user_data=user_data)
             app.firefly.init_tray_icon()
             app.firefly.create_menu()
@@ -8585,6 +11441,11 @@ if __name__ == "__main__":
 
 
         login_win.login_success.connect(on_login_success)
-        login_win.open()
+
+        # 模态显示，等待用户操作
+        if login_win.exec_() != QDialog.Accepted:
+            # 用户取消或直接关闭窗口
+            app.quit()
+            sys.exit(0)
 
     sys.exit(app.exec_())
