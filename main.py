@@ -1819,6 +1819,48 @@ class GachaBridge(QObject):
             pass
         print("[GachaBridge] 补齐资源后下发前端完整数据：", data)
 
+        # ★ 抽到的东西要立刻进本地背包（时装/自定义物品/信用点/蛋糕），
+        #   否则背包和时装面板要重登才看得到（服务端其实已经发放）。
+        #   注意：票/星琼不能在这里再加一次 —— 上面已经用服务端的权威余额覆盖过，
+        #   结果里的 jade/star_rail_ticket 条目已经包含在那个余额里了。
+        try:
+            _inv_changed = False
+            for _it in (data.get("results") or []):
+                _t = (_it or {}).get("type")
+                _iid = (_it or {}).get("id")
+                try:
+                    _amt = int((_it or {}).get("amount") or 0)
+                except Exception:
+                    _amt = 0
+                if _t == "custom" and _iid == "none":
+                    continue                      # 谢谢参与：不入包
+                if _t == "clothes":
+                    _owned = inv.setdefault("owned_clothes", ["normal"])
+                    if _iid and _iid not in _owned:
+                        _owned.append(_iid)
+                        _inv_changed = True
+                elif _t == "custom":
+                    if _iid:
+                        _ci = inv.setdefault("custom_items", {})
+                        _ci[_iid] = _ci.get(_iid, 0) + _amt
+                        _inv_changed = True
+                elif _t == "credit":
+                    inv["credit"] = inv.get("credit", 0) + _amt
+                    _inv_changed = True
+                elif _t == "cake":
+                    inv["balance"] = inv.get("balance", 0) + _amt
+                    _inv_changed = True
+            if _inv_changed:
+                if inv is not user_data:
+                    for _k in ("owned_clothes", "custom_items", "credit", "balance"):
+                        if _k in inv:
+                            user_data[_k] = inv[_k]
+                self.firefly.notify_inventory_updated()
+                self.firefly.apply_current_clothes()
+                print("[GachaBridge] 已同步本地背包（时装/物品/信用点）")
+        except Exception as _e:
+            print(f"[GachaBridge] 本地背包同步失败: {_e}")
+
         # ----- 新增：更新本地 gacha_history -----
         if "results" in data and data["results"]:
             now = datetime.now()
