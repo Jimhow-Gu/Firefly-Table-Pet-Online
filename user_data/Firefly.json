@@ -6,8 +6,8 @@
   "birthday": "2008-05-15",
   "register_time": "2026-05-15 19:03:34",
   "balance": 1004,
-  "credit": 36000,
-  "last_sign_date": "2026-08-05T19:30:26.623424",
+  "credit": 72000,
+  "last_sign_date": "2026-08-31T14:42:11.586107",
   "banned": false,
   "banned_until": null,
   "redeemed_codes": [
@@ -18,7 +18,8 @@
     "2026-05-18 22:03:13 - 使用兑换码 cake",
     "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x9",
     "2026-05-18 22:03:27 - 邮件领取: 橡木蛋糕卷 x999",
-    "2026-08-05 19:30:26 - 签到获得 36000 信用点"
+    "2026-08-05 19:30:26 - 签到获得 36000 信用点",
+    "2026-08-31 14:42:11 - 签到获得 36000 信用点"
   ],
   "cursor_style": "None",
   "pet_size": "small",
@@ -58,8 +59,8 @@
     }
   ],
   "last_state": "Standby",
-  "last_x": 1692,
-  "last_y": 126,
+  "last_x": 668,
+  "last_y": 130,
   "star_rail_tickets": 0,
   "last_birthday_greet_year": null,
   "last_feed_time": null,
@@ -71,26 +72,104 @@
   "total_affection_up": 0,
   "total_sleep_count": 0,
   "total_chat_count": 0,
-  "monthly_interactions": 1,
-  "monthly_open_count": 48,
-  "monthly_sign_days": 1,
+  "monthly_interactions": 0,
+  "monthly_open_count": 11,
+  "monthly_sign_days": 0,
   "monthly_affection_up": 0,
   "monthly_sleep_count": 0,
   "monthly_chat_count": 0,
-  "monthly_credit_gained": 7200,
+  "monthly_credit_gained": 0,
   "monthly_cake_gained": 0,
   "monthly_ai_click_count": 0,
-  "current_month": "2026-08",
+  "current_month": "2026-10",
   "current_clothes": "normal",
   "last_change_name_month": null,
   "change_name_count": 0,
   "custom_items": {},
   "jade": 0,
-  "monthly_jade_gained": 0,
-  "total_jade_gained": 0,
-  "monthly_ticket_gained": 0,
-  "total_ticket_gained": 0,
+  "monthly_jade_gained": 1610,
+  "total_jade_gained": 1610,
+  "monthly_ticket_gained": 10,
+  "total_ticket_gained": 10,
   "birthday_reward_year": null,
   "last_achievement_month": null,
-  "permission": "user"
+  "permission": "user",
+  "gacha_history": [
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "星琼",
+      "rarity": 4,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-08-31T14:40:05.315304+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    }
+  ],
+  "gacha_pity_5": 10,
+  "gacha_guaranteed_5": false,
+  "pm_special_focus": [
+    "admin-999999999"
+  ],
+  "pm_muted": []
 }

@@ -5,7 +5,7 @@
   "password": "123456",
   "birthday": "2008-05-16",
   "register_time": "2026-05-15 19:18:52",
-  "balance": 2005,
+  "balance": 2003,
   "banned": false,
   "redeemed_codes": [
     "Firefly",
@@ -58,11 +58,17 @@
     "2026-07-30 19:39:57 - 签到获得 7200 信用点",
     "2026-07-30 19:40:14 - 商店购买 3 个橡木蛋糕卷，花费 10800 信用点",
     "2026-07-30 20:08:14 - 商店购买 1 个橡木蛋糕卷，花费 3600 信用点",
-    "2026-07-31 13:42:07 - 签到获得 7200 信用点"
+    "2026-07-31 13:42:07 - 签到获得 7200 信用点",
+    "2026-09-04 22:15:04 - 签到获得 7200 信用点",
+    "2026-09-07 21:28:24 - 签到获得 7200 信用点",
+    "2026-10-05 13:39:25 - 商店购买 橡木蛋糕卷 x1，花费 3600 信用点（获得 橡木蛋糕卷 x1）",
+    "2026-10-05 13:39:35 - 签到获得 7200 信用点",
+    "2026-10-10 21:18:12 - 签到获得 7200 信用点",
+    "2026-10-12 20:18:40 - 商店购买 橡木蛋糕卷 x1，花费 3600 信用点（获得 橡木蛋糕卷 x1）"
   ],
   "banned_until": null,
-  "credit": 46800,
-  "last_sign_date": "2026-07-31T13:42:07.822855",
+  "credit": 72000,
+  "last_sign_date": "2026-10-10T21:18:12.683658",
   "cursor_style": "None",
   "pet_size": "small",
   "owned_clothes": [
@@ -71,38 +77,135 @@
   ],
   "mailbox": [],
   "last_state": "Standby",
-  "last_x": 1382,
-  "last_y": 384,
+  "last_x": 1851,
+  "last_y": 532,
   "star_rail_tickets": 1,
   "last_birthday_greet_year": 2026,
   "last_feed_time": null,
   "volume": 0.4,
   "allow_move": true,
-  "total_interactions": 8,
-  "total_open_count": 3,
-  "total_sign_days": 2,
-  "total_affection_up": 2,
+  "total_interactions": 14,
+  "total_open_count": 37,
+  "total_sign_days": 7,
+  "total_affection_up": 3,
   "total_sleep_count": 0,
   "total_chat_count": 4,
-  "monthly_interactions": 3,
-  "monthly_open_count": 35,
-  "monthly_sign_days": 0,
+  "monthly_interactions": 2,
+  "monthly_open_count": 84,
+  "monthly_sign_days": 2,
   "monthly_affection_up": 0,
   "monthly_sleep_count": 0,
-  "monthly_chat_count": 3,
-  "monthly_credit_gained": 0,
-  "monthly_cake_gained": 0,
-  "current_month": "2026-08",
-  "monthly_ai_click_count": 8,
+  "monthly_chat_count": 0,
+  "monthly_credit_gained": 14400,
+  "monthly_cake_gained": 1,
+  "current_month": "2026-10",
+  "monthly_ai_click_count": 0,
   "current_clothes": "normal",
   "last_change_name_month": null,
   "change_name_count": 0,
   "custom_items": {},
   "jade": 0,
-  "monthly_jade_gained": 0,
-  "total_jade_gained": 0,
-  "monthly_ticket_gained": 0,
-  "total_ticket_gained": 0,
+  "monthly_jade_gained": 1770,
+  "total_jade_gained": 1770,
+  "monthly_ticket_gained": 1,
+  "total_ticket_gained": 1,
   "birthday_reward_year": null,
-  "last_achievement_month": null
+  "last_achievement_month": null,
+  "gacha_history": [
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "none",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "星轨专票",
+      "rarity": 4,
+      "time": "2026-10-11T12:59:20.649353+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "信用点",
+      "rarity": 3,
+      "time": "2026-10-11T12:59:27.684337+08:00",
+      "isUp": false,
+      "isGuaranteed": false
+    },
+    {
+      "name": "星琼",
+      "rarity": 4,
+      "time": "2026-10-13 19:29:25",
+      "isUp": false,
+      "isGuaranteed": false,
+      "pool": "测试卡池",
+      "pool_id": "pool_mv3a3dbd",
+      "id": "1791890965413-0"
+    }
+  ],
+  "pm_special_focus": [],
+  "pm_muted": [],
+  "gacha_pity_5": 0,
+  "gacha_guaranteed_5": false,
+  "read_mails": [
+    "b4e233c5-af52-4a22-b1b5-696f36645452"
+  ],
+  "deleted_mails": []
 }
