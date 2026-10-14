@@ -1225,18 +1225,18 @@ def parse_time_spec(spec):
             pass
 
     # 3. 时长格式（支持大小写区分版和纯小写备选版）
+    # 单位表：只要不与另一单位冲突就大小写都收（D/d=天、H/h=小时、Y/y=年、S/s=秒），
+    # 并收下中文单位（天/日/小时/时/分/分钟/月/年/秒）。
+    # 仍区分大小写的只有一对：'M'=月、'm'=分钟（两个都常用，不能混）。
     units = {
-        'Y': 'years',
-        'yr': 'years',
-        'M': 'months',
-        'D': 'days',
-        'd': 'days',
-        'H': 'hours',
-        'hr': 'hours',
-        'm': 'minutes',
-        'min': 'minutes',
-        's': 'seconds',
-        'sec': 'seconds'
+        'Y': 'years', 'y': 'years', 'yr': 'years', 'yrs': 'years', 'year': 'years', 'years': 'years', '年': 'years',
+        'M': 'months', 'mo': 'months', 'mon': 'months', 'month': 'months', 'months': 'months', '月': 'months',
+        'D': 'days', 'd': 'days', 'day': 'days', 'days': 'days', '天': 'days', '日': 'days',
+        'H': 'hours', 'h': 'hours', 'hr': 'hours', 'hrs': 'hours', 'hour': 'hours', 'hours': 'hours',
+        '小时': 'hours', '时': 'hours',
+        'm': 'minutes', 'min': 'minutes', 'mins': 'minutes', 'minute': 'minutes', 'minutes': 'minutes',
+        '分': 'minutes', '分钟': 'minutes',
+        's': 'seconds', 'sec': 'seconds', 'secs': 'seconds', 'second': 'seconds', 'seconds': 'seconds', '秒': 'seconds',
     }
     # 按长度降序排列，避免 `yr` 被 `y` 误匹配
     unit_pattern = '|'.join(sorted(units.keys(), key=len, reverse=True))
@@ -1252,17 +1252,18 @@ def parse_time_spec(spec):
     years = months = days = hours = minutes = seconds = 0
     for num_str, unit in matches:
         num = int(num_str)
-        if unit in ('Y', 'yr'):
+        kind = units.get(unit)
+        if kind == 'years':
             years += num
-        elif unit == 'M':
+        elif kind == 'months':
             months += num
-        elif unit in ('D', 'd'):
+        elif kind == 'days':
             days += num
-        elif unit in ('H', 'hr'):
+        elif kind == 'hours':
             hours += num
-        elif unit in ('m', 'min'):
+        elif kind == 'minutes':
             minutes += num
-        elif unit in ('s', 'sec'):
+        elif kind == 'seconds':
             seconds += num
         else:
             return None, None
@@ -1271,6 +1272,35 @@ def parse_time_spec(spec):
     total_days = years * 365 + months * 30 + days
     delta = timedelta(days=total_days, hours=hours, minutes=minutes, seconds=seconds)
     return delta, None
+
+def resolve_expiry_dt(value):
+    """把有效期字段解析成 datetime（解析不了返回 None）。
+
+    兼容两类写法：
+      · 绝对时间：ISO / '2026-12-31 23:59:59'（服务端下发的一律是这种）；
+      · 相对写法：30D / 30d / 30天 / 2h / 30m（手填或旧存档里可能残留）。
+    以前这两处只认绝对时间（datetime.fromisoformat），相对写法直接抛异常被 except 吞掉
+    → 菜单/卡池显示不出剩余时间、到点也不会自动关闭。
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(v)
+        except Exception:
+            pass
+        try:
+            delta, until = parse_time_spec(v)
+        except Exception:
+            delta, until = None, None
+        if until:
+            return until
+        if delta:
+            return datetime.now() + delta
+    return None
 
 def clean_expired_mails(user_data):
     if "mailbox" not in user_data:
@@ -6189,6 +6219,7 @@ class SlashCompleter(QObject):
         self._cycle_token = ''         # 刚补齐的 token
         self._in_cycle = False         # 循环替换中（避免 refresh 重算候选位置）
         self._ime_composing = False   # 输入法组合中（此时不显示提示，避免与输入法候选窗重叠）
+        self.allow_at_s = True         # @目标里是否给 '@s'（本人）：服务端控制台没有本人，置 False
         self._ime_seq = 0            # 输入法事件序号（用于延迟恢复提示）
         self._hint_lbl = QLabel(edit)
         self._hint_lbl.setStyleSheet('color: rgba(255,255,255,110); background:transparent;')
@@ -6267,11 +6298,12 @@ class SlashCompleter(QObject):
         elif arg == 'online_user':
             cands = users_fn(True)
         elif arg == 'target':
-            cands = ['@a', '@s'] + users_fn(False)
+            cands = (['@a', '@s'] if getattr(self, 'allow_at_s', True) else ['@a']) + users_fn(False)
         elif arg == 'ban_target':
             cands = ['ip', 'area', 'timezone'] + users_fn(False)
         elif arg == 'set_target':
-            cands = ['newcode', '@a', '@s'] + users_fn(False)
+            cands = (['newcode', '@a', '@s'] if getattr(self, 'allow_at_s', True)
+                     else ['newcode', '@a']) + users_fn(False)
         elif isinstance(arg, (list, tuple)):
             cands = list(arg)
         else:
@@ -6289,7 +6321,7 @@ class SlashCompleter(QObject):
             elif a == 'online_user':
                 ph.append('<在线玩家>')
             elif a == 'target':
-                ph.append('<@a/@s/玩家>')
+                ph.append('<@a/@s/玩家>' if getattr(self, 'allow_at_s', True) else '<@a/玩家>')
             elif a == 'ban_target':
                 ph.append('<玩家|ip|area|timezone>')
             elif a == 'duration':
@@ -6323,11 +6355,12 @@ class SlashCompleter(QObject):
                 elif a == 'online_user':
                     cands = users_fn(True)
                 elif a == 'target':
-                    cands = ['@a', '@s'] + users_fn(False)
+                    cands = (['@a', '@s'] if getattr(self, 'allow_at_s', True) else ['@a']) + users_fn(False)
                 elif a == 'ban_target':
                     cands = ['ip', 'area', 'timezone'] + users_fn(False)
                 elif a == 'set_target':
-                    cands = ['newcode', '@a', '@s'] + users_fn(False)
+                    cands = (['newcode', '@a', '@s'] if getattr(self, 'allow_at_s', True)
+                             else ['newcode', '@a']) + users_fn(False)
                 elif isinstance(a, (list, tuple)):
                     cands = list(a)
                 else:
@@ -9021,10 +9054,10 @@ class Firefly(QWidget):
 
     def _get_remaining_text(self, expiry):
         """根据 expiry ISO 字符串返回剩余时间显示文本"""
-        if not expiry:
+        dt = resolve_expiry_dt(expiry)
+        if dt is None:
             return ""
         try:
-            dt = datetime.fromisoformat(expiry)
             now = datetime.now(dt.tzinfo)
             if now >= dt:
                 return " (已过期)"
@@ -9896,8 +9929,8 @@ class Firefly(QWidget):
         expiry = item.get('expiry')
         if expiry:
             try:
-                dt = datetime.fromisoformat(expiry)
-                if datetime.now(dt.tzinfo) >= dt:
+                dt = resolve_expiry_dt(expiry)
+                if dt is not None and datetime.now(dt.tzinfo) >= dt:
                     self.show_centered_message("提示", f"{item.get('label')} 已过期", QMessageBox.Warning)
                     return
             except:
@@ -12724,8 +12757,8 @@ class Firefly(QWidget):
         expiry = menu_item.get('expiry')
         if expiry:
             try:
-                dt = datetime.fromisoformat(expiry)
-                if datetime.now(dt.tzinfo) >= dt:
+                dt = resolve_expiry_dt(expiry)
+                if dt is not None and datetime.now(dt.tzinfo) >= dt:
                     self.show_centered_message("提示", f"{menu_item.get('label')} 已过期", QMessageBox.Warning)
                     return
             except:
@@ -12917,8 +12950,8 @@ class Firefly(QWidget):
         expiry = info.get('expiry')
         if expiry:
             try:
-                dt = datetime.fromisoformat(expiry)
-                if datetime.now(dt.tzinfo) >= dt:
+                dt = resolve_expiry_dt(expiry)
+                if dt is not None and datetime.now(dt.tzinfo) >= dt:
                     win = info.get('window')
                     if win:
                         win.close()
