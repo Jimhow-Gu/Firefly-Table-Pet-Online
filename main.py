@@ -3221,6 +3221,40 @@ class RedeemCodeDialog(QDialog):
         self.code_submitted.emit(code)
         self.code_edit.clear()  # 清空以便继续输入
 
+class ColorPixmapLabel(QLabel):
+    """彩色图标标签：直接绘制 pixmap，绕开 QStyle 的禁用灰度化。
+
+    QLabel 画 pixmap 时走 QStyle::drawItemPixmap，控件一旦处于禁用态
+    （背包条目是 disabled 的 QWidgetAction），Qt 会把整张图转成灰阶 —— 这就是
+    用户看到的「背包图标没有颜色」。这里自己 QPainter.drawPixmap，保证彩色。
+    """
+
+    def __init__(self, pixmap=None, parent=None):
+        super().__init__(parent)
+        self._pm = None
+        self.setStyleSheet("background: transparent;")
+        if pixmap is not None:
+            self.setColorPixmap(pixmap)
+
+    def setColorPixmap(self, pixmap):
+        self._pm = pixmap
+        if pixmap is not None and not pixmap.isNull():
+            self.setFixedSize(pixmap.size())
+        self.update()
+
+    def colorPixmap(self):
+        return self._pm
+
+    def paintEvent(self, event):
+        if self._pm is not None and not self._pm.isNull():
+            p = QPainter(self)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(0, 0, self._pm)
+            p.end()
+            return
+        super().paintEvent(event)
+
+
 class RoundedMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -14315,9 +14349,14 @@ class Firefly(QWidget):
                     if os.path.exists(p):
                         return p
                 return ''
-            if t in ('custom', 'clothes') and item_id:
-                _info = info or next((x for x in self.known_custom_items()
-                                      if x.get('id') == item_id), None)
+            # 自定义物品（服务端新增）：type 可能是 item / clothes / custom ——
+            # 以前只认 custom/clothes，服务端下发的 type='item' 一律解析失败，
+            # 背包里的「古老梦华」就一直显示成原 emoji。现在只要有 id 就按 id 找图片
+            # （内置的 cake / credit / 专票 / 星琼 上面已经 return 了）
+            if item_id:
+                _iid = str(item_id)
+                _info = info if isinstance(info, dict) and info else next(
+                    (x for x in self.known_custom_items() if x.get('id') == _iid), None)
                 if _info:
                     try:
                         p = self.custom_item_image_path(_info)      # 有缓存用缓存，在线则顺带补下
@@ -14325,18 +14364,41 @@ class Firefly(QWidget):
                             return p
                     except Exception:
                         pass
-                # 兜底：直接看本地缓存文件
+                # 兜底 1：版本化缓存 custom_assets/img/<id>_<ver>.png
                 try:
-                    _ci = _info or {}
-                    _ver = _ci.get('ver') or 0
-                    p = os.path.join(self._custom_asset_dir(), 'img', '%s_%s.png' % (item_id, _ver))
+                    _ver = (_info or {}).get('ver') or 0
+                    p = os.path.join(self._custom_asset_dir(), 'img', '%s_%s.png' % (_iid, _ver))
                     if os.path.exists(p):
                         return p
+                except Exception:
+                    pass
+                # 兜底 2：商店同步目录 server/<服务器码>/shop/self_area_img/<id>.png
+                try:
+                    _sdir = self._srv_shop_asset_dir()
+                    if _sdir:
+                        p = os.path.join(_sdir, '%s.png' % _iid)
+                        if os.path.exists(p):
+                            return p
                 except Exception:
                     pass
         except Exception as e:
             print(f"[图标] 解析失败({item_type}/{item_id}): {e}")
         return ''
+
+    def _srv_shop_asset_dir(self):
+        """server/<服务器码>/shop/self_area_img 目录（取不到返回 ''）
+
+        商店窗口没开时用 ShopMainWindow 的临时实例算（纯路径计算，不做 UI）。
+        """
+        try:
+            helper = getattr(self, 'shop_window', None)
+            if helper is not None and hasattr(helper, 'shop_asset_dir'):
+                return helper.shop_asset_dir() or ''
+            tmp = ShopMainWindow.__new__(ShopMainWindow)
+            tmp.firefly = self
+            return ShopMainWindow.shop_asset_dir(tmp) or ''
+        except Exception:
+            return ''
 
     def custom_item_image_path(self, item):
         """确保商店商品图片已下载，返回本地路径或 None（按 ver 版本化，换图即失效）"""
@@ -16612,12 +16674,12 @@ class Firefly(QWidget):
         layout.setContentsMargins(25, 7, 4, 7)
         layout.setSpacing(4)
 
-        # 图标（用户提供的 MARCH_7TH.png）
+        # 图标（彩色原图）：用 ColorPixmapLabel 自绘 —— 普通 QLabel 在禁用态
+        # （背包条目 enabled=False）会被 QStyle 灰度化，图标就"没颜色"了
         pixmap = QPixmap(icon_path)
         if not pixmap.isNull():
             pixmap = pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            icon_label = QLabel()
-            icon_label.setPixmap(pixmap)
+            icon_label = ColorPixmapLabel(pixmap)
             layout.addWidget(icon_label)
 
         # 文字
