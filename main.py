@@ -12976,7 +12976,8 @@ class Firefly(QWidget):
         # ----- 5. 记录窗口信息并启动过期检查定时器 -----
         self._gacha_win_info = {
             'menu_id': menu_id,
-            'expiry': expiry,
+            # 按钮有效期（只记录/只打日志，不关窗、不拦截）
+            'expiry': _mexp,
             'window': view,
             'menu_label': menu_item.get('label', '抽卡')
         }
