@@ -9967,15 +9967,15 @@ class Firefly(QWidget):
                 self._save_auto_download_pref()
 
     def _on_server_menu_clicked(self, item):
-        # ----- 检查有效期 -----
-        expiry = item.get('expiry')
-        if expiry:
+        # 按钮有效期：**只提示、不拦截**（用户要求"过了之后不要影响按钮的点击"）。
+        # 抽卡菜单的"卡池有效期"存在卡池上，由抽卡页面按秒倒计时、到点自动下架。
+        _expiry = item.get('expiry')
+        if _expiry:
             try:
-                dt = resolve_expiry_dt(expiry)
-                if dt is not None and datetime.now(dt.tzinfo) >= dt:
-                    self.show_centered_message("提示", f"{item.get('label')} 已过期", QMessageBox.Warning)
-                    return
-            except:
+                _dt = resolve_expiry_dt(_expiry)
+                if _dt is not None and datetime.now(_dt.tzinfo) >= _dt:
+                    print(f"[菜单] {item.get('label')} 的按钮有效期已过（不影响点击）")
+            except Exception:
                 pass
         print(f"[菜单点击] item={item}")
         itype = item.get('type')
@@ -10107,6 +10107,9 @@ class Firefly(QWidget):
             else:
 
                 self.show_centered_message("错误", "文件夹不存在", QMessageBox.Warning)
+        elif itype == 'none':
+            # 「无（仅显示）」：点了就是这个菜单本身，没有动作可做 —— 不弹错误框
+            print(f"[菜单点击] {item.get('label')} 是仅显示菜单，无动作")
         else:
             self.show_centered_message("提示", "未知菜单类型", QMessageBox.Warning)
 
@@ -12770,8 +12773,12 @@ class Firefly(QWidget):
         if self._ui_locked():
             return
         """
-        打开服务器下发的抽卡页面（QWebEngineView），支持有效期管理。
-        如果菜单项已过期，则不允许打开；打开后若过期，窗口自动关闭。
+        打开服务器下发的抽卡页面（QWebEngineView）。
+
+        有效期语义（第一百二十七批起）：
+          · 菜单的 expiry = 「按钮有效期」：到期只记日志，**不拦截打开、不自动关窗**；
+          · 卡池的 end_time = 「卡池有效期」：页面按秒倒计时，到点该卡池自动下架。
+        
         """
         import os
         from PyQt5.QtCore import QUrl, Qt, QTimer
@@ -12795,15 +12802,14 @@ class Firefly(QWidget):
             self.show_centered_message("错误", "菜单项不存在", QMessageBox.Warning)
             return
 
-        # 检查有效期
-        expiry = menu_item.get('expiry')
-        if expiry:
+        # 按钮有效期：只提示、不拦截（抽卡菜单的"卡池有效期"在卡池上，由页面按秒倒计时）
+        _mexp = menu_item.get('expiry')
+        if _mexp:
             try:
-                dt = resolve_expiry_dt(expiry)
-                if dt is not None and datetime.now(dt.tzinfo) >= dt:
-                    self.show_centered_message("提示", f"{menu_item.get('label')} 已过期", QMessageBox.Warning)
-                    return
-            except:
+                _mdt = resolve_expiry_dt(_mexp)
+                if _mdt is not None and datetime.now(_mdt.tzinfo) >= _mdt:
+                    print(f"[卡池] {menu_item.get('label')} 的按钮有效期已过（不拦截打开）")
+            except Exception:
                 pass
 
         # ----- 2. 构建资源路径（缺页面先由内置基底生成；同步自定义物品图片） -----
@@ -12986,21 +12992,23 @@ class Firefly(QWidget):
         print("跃迁窗口已打开")
 
     def _check_gacha_expiry(self):
+        """按钮有效期到点：只记日志，**不再自动关窗**（用户要求有效期不影响使用）。
+
+        卡池到点后是否还能抽由卡池自己的 end_time 决定：抽卡页面按秒倒计时，
+        到点该卡池自动下架（页面提示"卡池已到结束时间，已自动下架"），窗口照常可用。
+        """
         info = getattr(self, '_gacha_win_info', None)
         if not info:
             return
         expiry = info.get('expiry')
-        if expiry:
+        if expiry and not info.get('_expiry_logged'):
             try:
                 dt = resolve_expiry_dt(expiry)
                 if dt is not None and datetime.now(dt.tzinfo) >= dt:
-                    win = info.get('window')
-                    if win:
-                        win.close()
-                    self._gacha_win_info = None
-                    self.show_centered_message("提示", f"{info.get('menu_label', '抽卡')} 已过期，窗口已关闭",
-                                               QMessageBox.Warning)
-            except:
+                    info['_expiry_logged'] = True
+                    print(f"[卡池] {info.get('menu_label', '抽卡')} 的按钮有效期已过"
+                          f"（不关窗、不拦截，卡池到点由卡池自身下架）")
+            except Exception:
                 pass
 
     def _inject_gacha_data(self, view):
