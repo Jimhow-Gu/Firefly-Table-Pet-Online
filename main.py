@@ -2905,20 +2905,42 @@ class MailboxWindow(QDialog):
         # 构建详情（与原逻辑相同）
         items_html = []
         has_ticket = False
+
+        def _item_img(item_type, item_id=None):
+            """物品真实图片的 <img> 片段（取不到返回空串）"""
+            try:
+                _p = self.firefly.item_icon_path(item_type, item_id)
+                if _p:
+                    _u = 'file:///' + str(_p).replace(chr(92), '/')
+                    return '<img src="%s" width="16" height="16"/> ' % _u
+            except Exception:
+                pass
+            return ''
+
         for it in mail["items"]:
             if it["type"] == "cake":
-                items_html.append(f"橡木蛋糕卷 x{it['amount']}")
+                items_html.append(f"{_item_img('cake')}橡木蛋糕卷 x{it['amount']}")
             elif it["type"] == "credit":
-                items_html.append(f"信用点 x{it['amount']}")
+                items_html.append(f"{_item_img('credit')}信用点 x{it['amount']}")
             elif it["type"] == "clothes":
                 clothes_info = AVAILABLE_CLOTHES.get(it["id"], {})
                 name = clothes_info.get('name', it['id'])
-                items_html.append(f'时装 [<font color="#FFD700">{name}</font>]')
+                items_html.append(f'{_item_img("clothes", it.get("id"))}时装 [<font color="#FFD700">{name}</font>]')
             elif it["type"] == "star_rail_ticket":
                 has_ticket = True
-                items_html.append(f'<font color="#FFD700">星铁专票 x{it["amount"]}</font>')
+                items_html.append(f'{_item_img("star_rail_ticket")}<font color="#FFD700">星铁专票 x{it["amount"]}</font>')
             elif it["type"] == "jade":
-                items_html.append(f'<font color="#FFD700">星琼 x{it["amount"]}</font>')
+                items_html.append(f'{_item_img("jade")}<font color="#FFD700">星琼 x{it["amount"]}</font>')
+            elif it["type"] == "custom":
+                # 自定义物品/时装：以前这里没有分支 → 整条被跳过 → 只显示"物品：无"
+                _iid = str(it.get('id') or '')
+                if _iid == 'none':
+                    items_html.append('谢谢参与')
+                    continue
+                _info = next((x for x in (getattr(self.firefly, 'server_custom_items', None) or [])
+                              if x.get('id') == _iid), None)
+                _nm = (_info or {}).get('name') or it.get('name') or _iid or '未知物品'
+                items_html.append(f'{_item_img("custom", _iid)}<font color="#FFD700">{_nm} x{it["amount"]}</font>')
 
         items_text = ', '.join(items_html) if items_html else "无"
         status = "已领取" if mail.get("claimed") else "未领取"
@@ -2986,12 +3008,17 @@ class MailboxWindow(QDialog):
     # ---------- 一键领取 ----------
     def claim_all(self):
         if self.online_mails is not None:
-            for mail in self.mails:
-                if not mail.get("claimed") and mail.get("items"):
-                    self.firefly.mp_client._send({'type': 'claim_mail', 'data': {'mail_id': mail['id']}})
+            _todo = [m for m in self.mails if not m.get("claimed") and m.get("items")]
+            if not _todo:
+                # 都领完了就别再说"已发送领取请求"（用户实测的困惑点）
+                QMessageBox.information(self, "提示", "没有可领取的邮件（都已领取）")
+                return
+            for mail in _todo:
+                self.firefly.mp_client._send({'type': 'claim_mail', 'data': {'mail_id': mail['id']}})
             # 请求刷新，等待 on_mails_updated 自动标记已读
             self.firefly.mp_client._send({'type': 'get_mails'})
-            QMessageBox.information(self, "提示", "已发送领取请求，请稍候刷新。")
+            QMessageBox.information(self, "提示",
+                                    f"已发送 {len(_todo)} 封邮件的领取请求，稍候会自动刷新。")
         else:
             for mail in self.mails:
                 if not mail.get("claimed") and mail.get("items"):
@@ -14228,6 +14255,50 @@ class Firefly(QWidget):
             print(f"[自定义资源] 下载失败 {url}: {e}")
             return False
 
+    def item_icon_path(self, item_type, item_id=None, info=None):
+        """物品的真实图片路径（本地没有就返回 ''）——背包/邮件用「图片+文本」显示。
+
+        内置物品用客户端自带图；自定义物品用已下载的展示图；
+        取不到时调用方回退 emoji+文本。
+        """
+        try:
+            t = str(item_type or '')
+            if t in ('cake', 'balance'):
+                p = os.path.join(get_base_dir(), 'assets', 'images', 'foods', 'Cake.png')
+                return p if os.path.exists(p) else ''
+            if t in ('star_rail_ticket', 'ticket', 'star_rail_tickets'):
+                p = os.path.join(get_base_dir(), 'assets', 'images', 'star_rail_ticket.png')
+                return p if os.path.exists(p) else ''
+            if t in ('jade', 'credit'):
+                for p in (os.path.join(get_base_dir(), 'assets', 'images', '%s.png' % t),
+                          os.path.join(get_base_dir(), 'gacha_base', 'imgs', '%s.png' % t),
+                          os.path.join(self._custom_asset_dir(), 'img', '%s.png' % t)):
+                    if os.path.exists(p):
+                        return p
+                return ''
+            if t in ('custom', 'clothes') and item_id:
+                _info = info or next((x for x in (getattr(self, 'server_custom_items', None) or [])
+                                      if x.get('id') == item_id), None)
+                if _info:
+                    try:
+                        p = self.custom_item_image_path(_info)      # 有缓存用缓存，在线则顺带补下
+                        if p and os.path.exists(p):
+                            return p
+                    except Exception:
+                        pass
+                # 兜底：直接看本地缓存文件
+                try:
+                    _ci = _info or {}
+                    _ver = _ci.get('ver') or 0
+                    p = os.path.join(self._custom_asset_dir(), 'img', '%s_%s.png' % (item_id, _ver))
+                    if os.path.exists(p):
+                        return p
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[图标] 解析失败({item_type}/{item_id}): {e}")
+        return ''
+
     def custom_item_image_path(self, item):
         """确保商店商品图片已下载，返回本地路径或 None（按 ver 版本化，换图即失效）"""
         rel = item.get('image')
@@ -16922,26 +16993,35 @@ class Firefly(QWidget):
             bag.setTitle("🎒 背包")
             bag.setToolTipsVisible(True)
             items_added = False
+            # 背包条目统一用「真实图片 + 文本」；取不到图片才回退「emoji + 文本」
+            def _bag_action(text_with_emoji, text_plain, item_type, item_id=None, info=None):
+                act = QAction(text_plain, self)
+                _ip = self.item_icon_path(item_type, item_id, info)
+                if _ip:
+                    try:
+                        act.setIcon(QIcon(_ip))
+                    except Exception:
+                        act.setText(text_with_emoji)
+                else:
+                    act.setText(text_with_emoji)
+                act.setDisabled(True)
+                return act
+
             if balance > 0:
-                action_backpack = QAction(f'🍰 橡木蛋糕卷：{balance}个', self)
-                action_backpack.setDisabled(True)
-                bag.addAction(action_backpack)
+                bag.addAction(_bag_action(f'🍰 橡木蛋糕卷：{balance}个',
+                                          f'橡木蛋糕卷：{balance}个', 'cake'))
                 items_added = True
             if credit > 0:
-                action_credit = QAction(f'💰 信用点：{credit}', self)
-                action_credit.setDisabled(True)
-                bag.addAction(action_credit)
+                bag.addAction(_bag_action(f'💰 信用点：{credit}',
+                                          f'信用点：{credit}', 'credit'))
                 items_added = True
             if tickets > 0:
-                action_tickets = QAction(f'🎫 星铁专票：{tickets}张', self)
-                action_tickets.setDisabled(True)
-                bag.addAction(action_tickets)
+                bag.addAction(_bag_action(f'🎫 星铁专票：{tickets}张',
+                                          f'星铁专票：{tickets}张', 'star_rail_ticket'))
                 items_added = True
             jade = inv.get('jade', 0)
             if jade > 0:
-                action_jade = QAction(f'💎 星琼：{jade}', self)
-                action_jade.setDisabled(True)
-                bag.addAction(action_jade)
+                bag.addAction(_bag_action(f'💎 星琼：{jade}', f'星琼：{jade}', 'jade'))
                 items_added = True
             custom_items = inv.get('custom_items', {})
             if custom_items:
@@ -16951,9 +17031,8 @@ class Firefly(QWidget):
                     info = next((it for it in self.server_custom_items if it.get('id') == cid), None)
                     name = info.get('name', cid) if info else cid
                     icon = info.get('icon', '📦') if info else '📦'
-                    action = QAction(f'{icon} {name} × {cnt}', self)
-                    action.setDisabled(True)
-                    bag.addAction(action)
+                    bag.addAction(_bag_action(f'{icon} {name} × {cnt}', f'{name} × {cnt}',
+                                              (info or {}).get('type') or 'custom', cid, info))
                     items_added = True
             if not items_added:
                 empty_action = QAction("暂无物品", self)
@@ -16990,42 +17069,47 @@ class Firefly(QWidget):
                 sign_action.triggered.connect(self.sign_in)
             menu.addAction(sign_action)
 
-            # 小三月的秘密基地（单机）——图标使用内置 MARCH_7TH.png（用户指定），
+            # 游戏社区（单机/联机都有）：把原「小三月日记」收进来做二级菜单
+            community = RoundedMenu(menu)
+            community.setTitle("🌐 游戏社区")
+            community.setToolTipsVisible(True)
+
+            # 小三月的秘密基地——图标使用内置 MARCH_7TH.png（用户指定），
             # 悬浮高亮采用确定性状态切换（见 create_icon_text_action），无双高亮
-            if not self.mp_client.connected:
-                OPEN_TIME = datetime(2026, 8, 6, 12, 0, 0)
-                now = datetime.now()
-                icon_path = os.path.join(get_base_dir(), "assets", "images", "MARCH_7TH.png")
-                tooltip = "为所有崩铁玩家打造了一个属于我们的新世界！——小三月日记"
+            OPEN_TIME = datetime(2026, 8, 6, 12, 0, 0)
+            now = datetime.now()
+            icon_path = os.path.join(get_base_dir(), "assets", "images", "MARCH_7TH.png")
+            tooltip = "为所有崩铁玩家打造了一个属于我们的新世界！——小三月日记"
 
-                if self._website_status is False:
+            if self._website_status is False:
+                is_open = False
+                display_text = "小三月日记(维护中)"
+                tooltip_text = self._website_title if self._website_title else "公测延期，敬请期待"
+            elif self._website_status is True:
+                is_open = True
+                display_text = "小三月日记"
+                tooltip_text = tooltip
+            else:
+                if now < OPEN_TIME:
                     is_open = False
-                    display_text = "小三月日记(维护中)"
-                    tooltip_text = self._website_title if self._website_title else "公测延期，敬请期待"
-                elif self._website_status is True:
-                    is_open = True
                     display_text = "小三月日记"
-                    tooltip_text = tooltip
+                    tooltip_text = ""
                 else:
-                    if now < OPEN_TIME:
-                        is_open = False
-                        display_text = "小三月日记"
-                        tooltip_text = ""
-                    else:
-                        is_open = False
-                        display_text = "小三月日记(检测中...)"
-                        tooltip_text = "正在检测网站状态..."
+                    is_open = False
+                    display_text = "小三月日记(检测中...)"
+                    tooltip_text = "正在检测网站状态..."
 
-                # 图标+文字使用 QWidgetAction 自绘：Qt5 原生图标列固定贴在最左侧
-                # （无 setIconSize、QIcon 会把非方形位图压扁），无法右移对齐 emoji，
-                # 因此沿用图字控件保证图标位置；悬浮高亮改为确定性状态切换（见下）
-                secret_action = self.create_icon_text_action(
-                    display_text, icon_path, menu,
-                    enabled=is_open,
-                    tooltip=tooltip_text
-                )
-                secret_action.triggered.connect(lambda: webbrowser.open("https://blog.mar7th.cn/"))
-                menu.addAction(secret_action)
+            # 图标+文字使用 QWidgetAction 自绘：Qt5 原生图标列固定贴在最左侧
+            # （无 setIconSize、QIcon 会把非方形位图压扁），无法右移对齐 emoji，
+            # 因此沿用图字控件保证图标位置；悬浮高亮改为确定性状态切换（见下）
+            secret_action = self.create_icon_text_action(
+                display_text, icon_path, community,
+                enabled=is_open,
+                tooltip=tooltip_text
+            )
+            secret_action.triggered.connect(lambda: webbrowser.open("https://blog.mar7th.cn/"))
+            community.addAction(secret_action)
+            menu.addMenu(community)
 
             # AI唱歌子菜单
             sing = RoundedMenu(menu)
