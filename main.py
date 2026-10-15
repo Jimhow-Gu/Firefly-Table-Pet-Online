@@ -2389,8 +2389,22 @@ class MultiplayerClient(QObject):
                     self.firefly.push_gacha_data()
             except Exception as _e:
                 print(f"[兑换] 同步余额失败: {_e}")
-            if self.firefly and hasattr(self.firefly, '_current_gacha_bridge') and self.firefly._current_gacha_bridge:
-                self.firefly._current_gacha_bridge._send_result(data)
+            # 兑换结果走专用回调 —— 以前这里误用 _send_result（那等于调用页面 onGachaResult），
+            # 页面看到没有 results 就弹"抽卡结果为空，请联系管理员"（用户实测）
+            try:
+                _br = getattr(self.firefly, '_current_gacha_bridge', None)
+                if _br is not None:
+                    _views = getattr(self.firefly, '_gacha_webviews', None) or {}
+                    _js = ('window.onExchangeResult && window.onExchangeResult(' +
+                           json.dumps(data, ensure_ascii=False) + ')')
+                    for _mid2, _v2 in list(_views.items()):
+                        try:
+                            if _v2 is not None:
+                                _v2.page().runJavaScript(_js)
+                        except Exception:
+                            pass
+            except Exception as _ee:
+                print(f"[兑换] 推送页面失败: {_ee}")
         elif mtype == 'buy_shop_result':
             try:
                 if data.get('success'):
