@@ -2906,41 +2906,30 @@ class MailboxWindow(QDialog):
         items_html = []
         has_ticket = False
 
-        def _item_img(item_type, item_id=None):
-            """物品真实图片的 <img> 片段（取不到返回空串）"""
-            try:
-                _p = self.firefly.item_icon_path(item_type, item_id)
-                if _p:
-                    _u = 'file:///' + str(_p).replace(chr(92), '/')
-                    return '<img src="%s" width="16" height="16"/> ' % _u
-            except Exception:
-                pass
-            return ''
+        # 用户要求：邮箱里不显示图片/emoji，物品一律纯文本「名称 x数量」
 
         for it in mail["items"]:
             if it["type"] == "cake":
-                items_html.append(f"{_item_img('cake')}橡木蛋糕卷 x{it['amount']}")
+                items_html.append(f"橡木蛋糕卷 x{it['amount']}")
             elif it["type"] == "credit":
-                items_html.append(f"{_item_img('credit')}信用点 x{it['amount']}")
+                items_html.append(f"信用点 x{it['amount']}")
             elif it["type"] == "clothes":
                 clothes_info = AVAILABLE_CLOTHES.get(it["id"], {})
-                name = clothes_info.get('name', it['id'])
-                items_html.append(f'{_item_img("clothes", it.get("id"))}时装 [<font color="#FFD700">{name}</font>]')
+                name = clothes_info.get('name') or self.firefly.custom_item_name(it.get('id'))
+                items_html.append(f'时装 [<font color="#FFD700">{name}</font>]')
             elif it["type"] == "star_rail_ticket":
                 has_ticket = True
-                items_html.append(f'{_item_img("star_rail_ticket")}<font color="#FFD700">星铁专票 x{it["amount"]}</font>')
+                items_html.append(f'<font color="#FFD700">星铁专票 x{it["amount"]}</font>')
             elif it["type"] == "jade":
-                items_html.append(f'{_item_img("jade")}<font color="#FFD700">星琼 x{it["amount"]}</font>')
+                items_html.append(f'<font color="#FFD700">星琼 x{it["amount"]}</font>')
             elif it["type"] == "custom":
                 # 自定义物品/时装：以前这里没有分支 → 整条被跳过 → 只显示"物品：无"
                 _iid = str(it.get('id') or '')
                 if _iid == 'none':
                     items_html.append('谢谢参与')
                     continue
-                _info = next((x for x in (getattr(self.firefly, 'server_custom_items', None) or [])
-                              if x.get('id') == _iid), None)
-                _nm = (_info or {}).get('name') or it.get('name') or _iid or '未知物品'
-                items_html.append(f'{_item_img("custom", _iid)}<font color="#FFD700">{_nm} x{it["amount"]}</font>')
+                _nm = it.get('name') or self.firefly.custom_item_name(_iid) or '未知物品'
+                items_html.append(f'<font color="#FFD700">{_nm} x{it["amount"]}</font>')
 
         items_text = ', '.join(items_html) if items_html else "无"
         status = "已领取" if mail.get("claimed") else "未领取"
@@ -12126,6 +12115,7 @@ class Firefly(QWidget):
         if mtype == 'update_custom_config':
             self.server_custom_menu = data.get('custom_menu', [])
             self.server_custom_items = data.get('custom_items', [])
+            self.cache_custom_items(self.server_custom_items)   # 热更新后刷新缓存
             # 热更新包里带卡池配置时一并收下（老服务端不带，保持原值即可）
             try:
                 _gc = data.get('gacha_config')
@@ -12560,6 +12550,7 @@ class Firefly(QWidget):
         # ---------- 修改点1：接收服务端自定义菜单和物品 ----------
         self.server_custom_menu = data.get('custom_menu', [])
         self.server_custom_items = data.get('custom_items', [])
+        self.cache_custom_items(self.server_custom_items)   # 登录就存一份：单机/离线时显示名称与图片
         # 卡池配置：登录时必须收下！否则刚登录就打开卡池页面会拿到空列表 → 显示"无卡池"
         # （服务端登录包里有 gacha_config；以前这里漏了，只能等一次 gacha_config 广播才恢复）
         try:
@@ -14255,6 +14246,47 @@ class Firefly(QWidget):
             print(f"[自定义资源] 下载失败 {url}: {e}")
             return False
 
+    def _custom_items_cache_path(self):
+        return os.path.join(get_writable_dir(), 'custom_items_cache.json')
+
+    def cache_custom_items(self, items):
+        """把服务端下发的物品定义缓存到本地：单机/离线时靠它显示名称与图片"""
+        try:
+            if not isinstance(items, list):
+                return
+            with open(self._custom_items_cache_path(), 'w', encoding='utf-8') as f:
+                json.dump(items, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[物品缓存] 写入失败: {e}")
+
+    def known_custom_items(self):
+        """当前可用的物品定义：优先服务端下发的，其次本地缓存（单机模式）"""
+        try:
+            live = getattr(self, 'server_custom_items', None)
+            if isinstance(live, list) and live:
+                return live
+        except Exception:
+            pass
+        try:
+            with open(self._custom_items_cache_path(), 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if isinstance(cached, list):
+                return cached
+        except Exception:
+            pass
+        return []
+
+    def custom_item_name(self, item_id):
+        """自定义物品的名称（找不到就用 id，绝不显示成空）"""
+        try:
+            _iid = str(item_id or '')
+            for it in self.known_custom_items():
+                if it.get('id') == _iid:
+                    return it.get('name') or _iid
+        except Exception:
+            pass
+        return str(item_id or '')
+
     def item_icon_path(self, item_type, item_id=None, info=None):
         """物品的真实图片路径（本地没有就返回 ''）——背包/邮件用「图片+文本」显示。
 
@@ -14269,15 +14301,22 @@ class Firefly(QWidget):
             if t in ('star_rail_ticket', 'ticket', 'star_rail_tickets'):
                 p = os.path.join(get_base_dir(), 'assets', 'images', 'star_rail_ticket.png')
                 return p if os.path.exists(p) else ''
-            if t in ('jade', 'credit'):
-                for p in (os.path.join(get_base_dir(), 'assets', 'images', '%s.png' % t),
-                          os.path.join(get_base_dir(), 'gacha_base', 'imgs', '%s.png' % t),
-                          os.path.join(self._custom_asset_dir(), 'img', '%s.png' % t)):
+            if t == 'credit':
+                # 用户指定：信用点用自带的 assets/images/Credit/Item_Credit.png
+                for p in (os.path.join(get_base_dir(), 'assets', 'images', 'Credit', 'Item_Credit.png'),
+                          os.path.join(get_base_dir(), 'gacha_base', 'imgs', 'credit.png')):
+                    if os.path.exists(p):
+                        return p
+                return ''
+            if t == 'jade':
+                for p in (os.path.join(get_base_dir(), 'assets', 'images', 'Jade', 'Item_Jade.png'),
+                          os.path.join(get_base_dir(), 'gacha_base', 'imgs', 'stellar_jade.png'),
+                          os.path.join(get_base_dir(), 'gacha_base', 'imgs', 'jade.png')):
                     if os.path.exists(p):
                         return p
                 return ''
             if t in ('custom', 'clothes') and item_id:
-                _info = info or next((x for x in (getattr(self, 'server_custom_items', None) or [])
+                _info = info or next((x for x in self.known_custom_items()
                                       if x.get('id') == item_id), None)
                 if _info:
                     try:
@@ -16993,17 +17032,18 @@ class Firefly(QWidget):
             bag.setTitle("🎒 背包")
             bag.setToolTipsVisible(True)
             items_added = False
-            # 背包条目统一用「真实图片 + 文本」；取不到图片才回退「emoji + 文本」
+            # 背包条目统一用「真实图片 + 文本」；取不到图片才回退「emoji + 文本」。
+            # 用 create_icon_text_action 自绘：图标 16×16 彩色、和原生图标列对齐
+            # （直接 setIcon 时 Qt5 会把图标贴最左侧、还常被压扁 —— 用户反馈的错位/没颜色）
             def _bag_action(text_with_emoji, text_plain, item_type, item_id=None, info=None):
-                act = QAction(text_plain, self)
                 _ip = self.item_icon_path(item_type, item_id, info)
                 if _ip:
                     try:
-                        act.setIcon(QIcon(_ip))
-                    except Exception:
-                        act.setText(text_with_emoji)
-                else:
-                    act.setText(text_with_emoji)
+                        return self.create_icon_text_action(text_plain, _ip, bag,
+                                                            enabled=False)
+                    except Exception as _e:
+                        print(f"[背包] 图片图标失败({item_id}): {_e}")
+                act = QAction(text_with_emoji, self)
                 act.setDisabled(True)
                 return act
 
@@ -17024,12 +17064,17 @@ class Firefly(QWidget):
                 bag.addAction(_bag_action(f'💎 星琼：{jade}', f'星琼：{jade}', 'jade'))
                 items_added = True
             custom_items = inv.get('custom_items', {})
+            # 单机模式不显示"服务器新增物品"（用户要求）：这些物品的定义与图片都来自服务器，
+            # 离线时显示出来只会是一串 id，容易误解
+            if custom_items and not self.mp_client.connected:
+                custom_items = {}
             if custom_items:
                 if items_added:
                     bag.addSeparator()
                 for cid, cnt in custom_items.items():
-                    info = next((it for it in self.server_custom_items if it.get('id') == cid), None)
-                    name = info.get('name', cid) if info else cid
+                    info = next((it for it in self.known_custom_items() if it.get('id') == cid), None)
+                    # 单机模式没有服务端下发 → 用本地缓存解析名称（以前直接显示物品 id）
+                    name = (info or {}).get('name') or self.custom_item_name(cid) or cid
                     icon = info.get('icon', '📦') if info else '📦'
                     bag.addAction(_bag_action(f'{icon} {name} × {cnt}', f'{name} × {cnt}',
                                               (info or {}).get('type') or 'custom', cid, info))
@@ -17071,7 +17116,7 @@ class Firefly(QWidget):
 
             # 游戏社区（单机/联机都有）：把原「小三月日记」收进来做二级菜单
             community = RoundedMenu(menu)
-            community.setTitle("🌐 游戏社区")
+            community.setTitle("🏘️ 游戏社区")
             community.setToolTipsVisible(True)
 
             # 小三月的秘密基地——图标使用内置 MARCH_7TH.png（用户指定），
