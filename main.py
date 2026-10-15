@@ -4246,7 +4246,8 @@ class ResetPasswordWindow(QDialog):
         set_window_emoji_icon(self, "🔒")
         self.setWindowTitle("重置密码")
         self.setFixedSize(400, 520)
-        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        # 登录/注册/忘记密码：不进任务栏（Qt.Tool 与抽卡窗口同一套做法）
+        self.setWindowFlags(Qt.Tool | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
@@ -4386,7 +4387,8 @@ class RegisterWindow(QDialog):
         set_window_emoji_icon(self, "📝")
         self.setWindowTitle("注册账号")
         self.setFixedSize(400, 560)
-        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        # 登录/注册/忘记密码：不进任务栏（Qt.Tool 与抽卡窗口同一套做法）
+        self.setWindowFlags(Qt.Tool | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
@@ -4578,7 +4580,8 @@ class LoginWindow(QDialog):
         set_window_emoji_icon(self, "🔑")
         self.setWindowTitle("用户登录")
         self.setFixedSize(400, 520)
-        self.setWindowFlags(Qt.Window | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+        # 登录/注册/忘记密码：不进任务栏（Qt.Tool 与抽卡窗口同一套做法）
+        self.setWindowFlags(Qt.Tool | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
@@ -9093,6 +9096,56 @@ class Firefly(QWidget):
             self.push_gacha_data()
         except Exception:
             pass
+
+    def _resolve_local_item_id(self, raw):
+        """把命令里写的物品 id 解析成规范 id（大小写不敏感；解析不了返回 None）。
+
+        以前客户端控制台是 `parts[2].lower()` 后精确匹配 → 自定义物品 id 只要含大写字母
+        （例如 Oneiric_Shard）就永远弹"未知物品ID"。
+        现在：自定义物品精确匹配优先 → 内置名/别名（ticket、star_rail_ticket、ruyi…）→
+        时装（忽略大小写）→ 自定义物品忽略大小写。
+        """
+        if raw is None:
+            return None
+        try:
+            txt = str(raw).strip()
+        except Exception:
+            return None
+        if not txt:
+            return None
+        low = txt.lower()
+        alias = {'ruyi': '26_Newyear', 'ticket': 'ticket',
+                 'star_rail_ticket': 'ticket', 'star_rail_tickets': 'star_rail_tickets',
+                 'cake': 'cake', 'credit': 'credit', 'jade': 'jade', 'none': 'none'}
+        try:
+            _ci = self.server.load_custom_items() if hasattr(self, 'server') else []
+        except Exception:
+            _ci = []
+        for it in (_ci or []):
+            if it.get('id') == txt:
+                return txt
+        if low in alias:
+            return alias[low]
+        for cid in AVAILABLE_CLOTHES:
+            if cid.lower() == low:
+                return cid
+        for it in (_ci or []):
+            if str(it.get('id') or '').lower() == low:
+                return it.get('id')
+        return None
+
+    def _is_clothes_like(self, item_id):
+        """是否"时装类"（数量应固定为 1）：内置时装或自定义时装"""
+        try:
+            if item_id in AVAILABLE_CLOTHES:
+                return True
+            _ci = self.server.load_custom_items() if hasattr(self, 'server') else []
+            for it in (_ci or []):
+                if it.get('id') == item_id:
+                    return (it.get('type') or 'item') == 'clothes'
+        except Exception:
+            pass
+        return False
 
     def _get_remaining_text(self, expiry):
         """根据 expiry ISO 字符串返回剩余时间显示文本"""
@@ -14683,7 +14736,8 @@ class Firefly(QWidget):
                                            QMessageBox.Warning)
                 return True
             user_spec = parts[1]
-            item_id = parts[2].lower()
+            # 大小写不敏感解析（自定义物品可能含大写，如 Oneiric_Shard）
+            item_id = self._resolve_local_item_id(parts[2]) or parts[2].strip().lower()
             if len(parts) >= 4:
                 try:
                     amount = int(parts[3])
@@ -14695,9 +14749,8 @@ class Firefly(QWidget):
                     return True
             else:
                 amount = 1
-            # 时装强制数量为1
-            if item_id not in ['cake', 'credit', 'ticket', 'star_rail_tickets',
-                               'jade'] and item_id not in AVAILABLE_CLOTHES:
+            # 时装强制数量为1；自定义"物品"尊重填写的数量（以前所有非内置物品都被强制成 1）
+            if self._is_clothes_like(item_id) or item_id == 'ruyi':
                 amount = 1
 
             # 获取目标用户
@@ -14774,7 +14827,8 @@ class Firefly(QWidget):
                 self.show_centered_message("错误", "格式: /set <用户> <物品> <数量>", QMessageBox.Warning)
                 return True
             user_spec = parts[1]
-            item_id = parts[2].lower()
+            # 大小写不敏感解析（自定义物品可能含大写）
+            item_id = self._resolve_local_item_id(parts[2]) or parts[2].strip().lower()
             try:
                 amount = int(parts[3])
             except:
@@ -14828,7 +14882,7 @@ class Firefly(QWidget):
                     inv['star_rail_tickets'] = amount
                 elif item_id == 'jade':
                     inv['jade'] = amount
-                elif item_id in AVAILABLE_CLOTHES:
+                elif self._is_clothes_like(item_id):
                     if amount == 0:
                         if item_id in inv.get('owned_clothes', []):
                             inv['owned_clothes'].remove(item_id)
@@ -14839,6 +14893,13 @@ class Firefly(QWidget):
                         self.show_centered_message("错误", f"时装只能设置为 0(移除) 或 1(添加)，当前为 {amount}",
                                                    QMessageBox.Warning)
                         return True
+                elif self._resolve_local_item_id(item_id):
+                    # 自定义物品：直接设定数量（0 = 清空）
+                    _ci = inv.setdefault('custom_items', {})
+                    if amount <= 0:
+                        _ci.pop(item_id, None)
+                    else:
+                        _ci[item_id] = amount
                 else:
                     self.show_centered_message("错误", f"未知物品: {item_id}", QMessageBox.Warning)
                     return True
