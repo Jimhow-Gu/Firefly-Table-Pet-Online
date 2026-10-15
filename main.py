@@ -12,6 +12,7 @@ import sys
 import traceback
 import weakref
 import hashlib
+import io
 
 import psutil
 import pygame
@@ -1510,17 +1511,97 @@ class ConnectionThread(QThread):
             except:
                 pass
 
+# ==================== 资源包加密与完整性（防篡改 / 防抓包复用） ====================
+PACK_MAGIC = b'FLYENC1'
+PACK_KEY_SALT = b'FireflyPack-v1'
+
+
+def pack_key(menu_id, secret=''):
+    """资源包密钥：与服务器同一算法 = sha256(盐 + 服务器私密 secret + 菜单 id)"""
+    if isinstance(secret, str):
+        secret = secret.encode('utf-8')
+    return hashlib.sha256(PACK_KEY_SALT + b'|' + (secret or b'') + b'|' +
+                          str(menu_id or '').encode('utf-8')).digest()
+
+
+def pack_decrypt(blob, key):
+    """解密服务器加密下发的资源包；不是本程序加密的（旧服务器/普通 zip）原样返回"""
+    if not blob or not blob.startswith(PACK_MAGIC):
+        return blob
+    nonce = blob[len(PACK_MAGIC):len(PACK_MAGIC) + 8]
+    data = blob[len(PACK_MAGIC) + 8:]
+    n = len(data)
+    if n == 0:
+        return b''
+    blocks = (n + 31) // 32
+    ks = b''.join(hashlib.sha256(key + nonce + i.to_bytes(8, 'big')).digest()
+                  for i in range(blocks))[:n]
+    return (int.from_bytes(data, 'big') ^ int.from_bytes(ks, 'big')).to_bytes(n, 'big')
+
+
+def pack_manifest_sig(files, key):
+    """清单签名校验（和服务端 pack_manifest_sig 一致；中间人改包会被发现）"""
+    import hmac as _hmac
+    payload = json.dumps(files, ensure_ascii=False, sort_keys=True).encode('utf-8')
+    return _hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def safe_extract_zip(zip_bytes, extract_to):
+    """内存解压：拒绝绝对路径/../ 之类的条目（防恶意包写出目录）"""
+    import zipfile as _zip
+    os.makedirs(extract_to, exist_ok=True)
+    base = os.path.abspath(extract_to)
+    n = 0
+    with _zip.ZipFile(io.BytesIO(zip_bytes), 'r') as z:
+        for info in z.infolist():
+            name = str(info.filename).replace(chr(92), '/').lstrip('/')
+            if not name or name.endswith('/'):
+                continue
+            parts = [p for p in name.split('/') if p not in ('', '.')]
+            if any(p == '..' for p in parts):
+                print(f"[资源包] 跳过可疑条目: {name}")
+                continue
+            dest = os.path.join(base, *parts)
+            if not os.path.abspath(dest).startswith(base):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, 'wb') as f:
+                f.write(z.read(info))
+            n += 1
+    return n
+
+
+def dir_file_hashes(directory):
+    """目录内所有文件的相对路径 → sha256（用于本地清单与校验）"""
+    out = {}
+    base = os.path.abspath(directory)
+    for root, dirs, names in os.walk(base):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        for fn in names:
+            if fn == '.integrity.json':
+                continue
+            p = os.path.join(root, fn)
+            rel = os.path.relpath(p, base).replace(chr(92), '/')
+            try:
+                with open(p, 'rb') as f:
+                    out[rel] = hashlib.sha256(f.read()).hexdigest()
+            except Exception:
+                pass
+    return out
+
+
 class _GachaPackSync(QThread):
     """后台静默同步资源包：不弹 Qt 窗口，进度通过页面内提示展示。"""
 
     progress = pyqtSignal(int)           # 0-100，-1 表示总大小未知
     finished_ok = pyqtSignal(bool, str)  # 是否成功, 说明
 
-    def __init__(self, url, zip_path, extract_to, parent=None):
+    def __init__(self, url, zip_path, extract_to, parent=None, key=None):
         super().__init__(parent)
         self.url = url
         self.zip_path = zip_path
         self.extract_to = extract_to
+        self.key = key            # 资源包密钥（服务器加密下发时用它解密）
 
     def run(self):
         try:
@@ -1540,19 +1621,39 @@ class _GachaPackSync(QThread):
                         f.write(chunk)
                         got += len(chunk)
                         self.progress.emit(int(got * 100 / total) if total else -1)
+            # 服务器加密下发的包：先解密；解密不了就按普通 zip 处理（兼容旧服务器）
+            try:
+                with open(self.zip_path, 'rb') as f:
+                    blob = f.read()
+            except Exception as e:
+                self.finished_ok.emit(False, f'读取资源包失败：{e}')
+                return
+            if self.key and blob.startswith(PACK_MAGIC):
+                plain = pack_decrypt(blob, self.key)
+                if not plain.startswith(b'PK'):
+                    self.finished_ok.emit(False, '资源包解密失败（密钥不匹配或文件被改动）')
+                    return
+            else:
+                plain = blob
             if os.path.isdir(self.extract_to):
                 shutil.rmtree(self.extract_to, ignore_errors=True)
             os.makedirs(self.extract_to, exist_ok=True)
-            import zipfile as _zipfile
-            with _zipfile.ZipFile(self.zip_path, 'r') as zf:
-                zf.extractall(self.extract_to)
             try:
-                os.remove(self.zip_path)
-            except Exception:
-                pass
+                safe_extract_zip(plain, self.extract_to)
+            except Exception as e:
+                self.finished_ok.emit(False, f'资源包解压失败：{e}')
+                return
+            # 加密的 .zip 保留下来当"修复源"（本地被别人改动时用它重解；它本身是密文，拷走没用）
             if not os.path.exists(os.path.join(self.extract_to, 'index.html')):
                 self.finished_ok.emit(False, '资源包缺少 index.html')
                 return
+            try:
+                with open(os.path.join(self.extract_to, '.integrity.json'), 'w',
+                          encoding='utf-8') as f:
+                    json.dump({'files': dir_file_hashes(self.extract_to), 'src': 'pack'},
+                              f, ensure_ascii=False)
+            except Exception:
+                pass
             self.finished_ok.emit(True, '卡池资源已同步完成')
         except Exception as e:
             self.finished_ok.emit(False, f'同步失败：{e}')
@@ -2008,6 +2109,11 @@ class MultiplayerClient(QObject):
         # ---------- 新增：保存 Web 端口（用于资源下载） ----------
         web_port = data.get('web_port', 8080)  # 从服务端获取，默认 8080
         self.server_web_port = web_port
+        # 资源包密钥种子：服务端登录时下发，用来解密资源包 / 校验清单签名（不落盘）
+        try:
+            self.pack_secret = str(data.get('pack_secret') or '')
+        except Exception:
+            self.pack_secret = ''
 
         # 更新客户端状态
         self.connected = True
@@ -3317,11 +3423,15 @@ class ShopMainWindow(QDialog):
         except Exception:
             pass
         try:
-            host = getattr(self.firefly, 'server_host', '') or 'server'
+            # 不把 ip:端口 写进目录名（用户要求）：改用 sha256 短哈希（乱码，稳定不变）
+            host = getattr(self.firefly, 'server_host', '') or ''
             port = getattr(self.firefly, 'server_web_port', '') or ''
-            return ''.join(ch for ch in f'{host}_{port}' if ch.isalnum() or ch in '_-')[:40] or 'server'
+            raw = f'{host}:{port}'.strip(':')
+            if raw:
+                return 'h' + hashlib.sha256(('FireflySrv|' + raw).encode('utf-8')).hexdigest()[:16]
         except Exception:
-            return 'server'
+            pass
+        return 'h' + hashlib.sha256(b'FireflySrv|unknown').hexdigest()[:16]
 
     def shop_asset_dir(self):
         """自定义物品资源目录：server/<服务器识别码>/shop/self_area_img/（不存在则创建）"""
@@ -9469,7 +9579,8 @@ class Firefly(QWidget):
         extract_to = os.path.join(self.server_resource_dir, menu_id)
         self._push_gacha_notice('正在同步卡池资源…', 'progress', 0)
         try:
-            worker = _GachaPackSync(url, zip_path, extract_to, self)
+            worker = _GachaPackSync(url, zip_path, extract_to, self,
+                                    key=pack_key(menu_id, self._pack_secret()))
         except Exception as e:
             self._push_gacha_notice(f'❌ 同步失败：{e}', 'error')
             return
@@ -9558,6 +9669,176 @@ class Firefly(QWidget):
         except Exception:
             pass
 
+
+    # ==================== 资源包完整性：服务端清单 + 自动修复 ====================
+    def _pack_secret(self):
+        return getattr(self, 'pack_secret', '') or ''
+
+    def _http_get(self, rel, timeout=8):
+        """从服务端 Web 取一个小文件（清单用）；失败返回 None"""
+        url = self._custom_server_url(rel)
+        if not url or not self._web_port_alive():
+            return None
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'FireflyPet'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except Exception as e:
+            print(f"[完整性] 取 {rel} 失败: {e}")
+            return None
+
+    def _fetch_pack_manifest(self, menu_id):
+        """取服务端清单并验签；通过返回 {相对路径: sha256}，否则 None。
+
+        清单形如 {"files": {...}, "sig": HMAC}：先验签（别人改了包/清单都过不了），
+        再拿它去校验本地解压出来的文件。
+        """
+        if not menu_id:
+            return None
+        raw = self._http_get(f'/resources/{menu_id}.manifest')
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw.decode('utf-8', 'ignore') or '{}')
+        except Exception as e:
+            print(f"[完整性] 清单解析失败: {e}")
+            return None
+        files = data.get('files')
+        sig = str(data.get('sig') or '')
+        if not isinstance(files, dict) or not files:
+            return None
+        try:
+            want = pack_manifest_sig(files, pack_key(menu_id, self._pack_secret()))
+        except Exception as e:
+            print(f"[完整性] 清单验签异常: {e}")
+            return None
+        if sig != want:
+            print(f"[完整性] {menu_id} 清单签名不匹配（可能被中间人改动），忽略该清单")
+            return None
+        return files
+
+    def _verify_page_files(self, page_dir, expect):
+        """逐个校验本地文件：返回问题列表（missing: / tampered: / extra:）"""
+        problems = []
+        if not isinstance(expect, dict) or not expect:
+            return problems
+        for rel, want in expect.items():
+            rel_os = str(rel).replace('/', os.sep)
+            p = os.path.join(page_dir, rel_os)
+            if not os.path.exists(p):
+                problems.append('missing:' + str(rel))
+                continue
+            try:
+                with open(p, 'rb') as f:
+                    got = hashlib.sha256(f.read()).hexdigest()
+            except Exception:
+                problems.append('unreadable:' + str(rel))
+                continue
+            if got != want:
+                problems.append('tampered:' + str(rel))
+        local = dir_file_hashes(page_dir)
+        for rel in local:
+            if rel not in expect:
+                problems.append('extra:' + rel)
+        return problems
+
+    def _local_page_manifest(self, page_dir):
+        """本地清单（服务端没有包时用；用于发现本地被改动/丢失）"""
+        try:
+            p = os.path.join(page_dir, '.integrity.json')
+            if os.path.exists(p):
+                with open(p, 'r', encoding='utf-8') as f:
+                    return (json.load(f) or {}).get('files') or {}
+        except Exception:
+            pass
+        return {}
+
+    def _write_local_page_manifest(self, page_dir):
+        try:
+            with open(os.path.join(page_dir, '.integrity.json'), 'w', encoding='utf-8') as f:
+                json.dump({'files': dir_file_hashes(page_dir), 'src': 'base'},
+                          f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[完整性] 写本地清单失败: {e}")
+
+    def _repair_page_files(self, menu_id, page_dir, problems):
+        """修复被改动/丢失的页面文件：加密包重解 → 内置基底重铺。返回是否修好。"""
+        print(f"[完整性] {menu_id} 发现 {len(problems)} 处异常，开始修复：{problems[:5]}")
+        # ① 本地还有加密资源包（修复源）→ 解密重解
+        zp = os.path.join(self.server_resource_dir, f'{menu_id}.zip')
+        if os.path.exists(zp):
+            try:
+                with open(zp, 'rb') as f:
+                    blob = f.read()
+                key = pack_key(menu_id, self._pack_secret())
+                plain = pack_decrypt(blob, key) if blob.startswith(PACK_MAGIC) else blob
+                if plain.startswith(b'PK'):
+                    for _p in list(problems):
+                        _rel = _p.split(':', 1)[1].replace('/', os.sep)
+                        try:
+                            os.remove(os.path.join(page_dir, _rel))
+                        except Exception:
+                            pass
+                    safe_extract_zip(plain, page_dir)
+                    self._write_local_page_manifest(page_dir)
+                    print(f"[完整性] {menu_id} 已用本地资源包恢复")
+                    return True
+            except Exception as e:
+                print(f"[完整性] 用本地包恢复失败: {e}")
+        # ② 用内置基底重新铺开（删掉签名强制重铺）
+        try:
+            sig_path = os.path.join(page_dir, '.gacha_base_sig')
+            if os.path.exists(sig_path):
+                os.remove(sig_path)
+            if self._ensure_gacha_base(menu_id):
+                # 顺手清掉"多出来的文件"（被注入的脚本等）：以刚写好的清单为准
+                try:
+                    man = self._local_page_manifest(page_dir)
+                    if man:
+                        for rel in list(dir_file_hashes(page_dir).keys()):
+                            if rel not in man:
+                                try:
+                                    os.remove(os.path.join(page_dir, rel.replace('/', os.sep)))
+                                    print(f"[完整性] 已清除多余文件: {rel}")
+                                except Exception:
+                                    pass
+                except Exception as _pe:
+                    print(f"[完整性] 清除多余文件失败: {_pe}")
+                self._write_local_page_manifest(page_dir)
+                print(f"[完整性] {menu_id} 已用内置基底恢复")
+                return True
+        except Exception as e:
+            print(f"[完整性] 用内置基底恢复失败: {e}")
+        return False
+
+    def verify_and_repair_page(self, menu_id):
+        """打开页面之前调用：校验本地页面完整性，必要时自动修复。返回 (ok, 说明)"""
+        try:
+            page_dir = os.path.join(self.server_resource_dir, menu_id)
+            if not os.path.isdir(page_dir):
+                return True, ''
+            # 服务端清单优先（权威，且验签过）；没有就退回本地清单
+            expect = self._fetch_pack_manifest(menu_id)
+            source = '服务端'
+            if not expect:
+                expect = self._local_page_manifest(page_dir)
+                source = '本地'
+            if not expect:
+                return True, ''
+            problems = self._verify_page_files(page_dir, expect)
+            if not problems:
+                return True, ''
+            ok = self._repair_page_files(menu_id, page_dir, problems)
+            # 修复后再校验一次（本地清单此时已刷新）
+            expect2 = self._fetch_pack_manifest(menu_id) or self._local_page_manifest(page_dir)
+            left = self._verify_page_files(page_dir, expect2) if expect2 else []
+            if ok and not left:
+                return True, f'本地资源被改动（{source}清单），已自动恢复'
+            return (not left), '资源被改动且自动恢复失败，请点「🔧 资源修复」'
+        except Exception as e:
+            print(f"[完整性] 校验页面异常: {e}")
+            return True, ''
+
     def _gacha_base_sig(self):
         """内置卡池基底的签名（内容一变就重新铺开）。用于识别"本地页面是旧版本"。"""
         try:
@@ -9621,6 +9902,11 @@ class Firefly(QWidget):
             if sig:
                 with open(sig_path, 'w', encoding='utf-8') as f:
                     f.write(sig)
+            # 记一份本地清单：之后发现本地被改动/丢失时，靠它 + 内置基底自动恢复
+            try:
+                self._write_local_page_manifest(page_dir)
+            except Exception:
+                pass
             print(f"[卡池基底] 已{'更新' if existed else '生成'} {menu_id} 的本地页面")
             return os.path.exists(index_path)
         except Exception as e:
@@ -9892,9 +10178,23 @@ class Firefly(QWidget):
                 shutil.rmtree(extract_to)
             os.makedirs(extract_to, exist_ok=True)
 
-            with zipfile.ZipFile(local_zip, 'r') as zip_ref:
-                zip_ref.extractall(extract_to)
-
+            # 服务端加密下发的包：先解密再内存安全解压（防路径穿越/防篡改用）
+            with open(local_zip, 'rb') as _zf:
+                _blob = _zf.read()
+            if _blob.startswith(PACK_MAGIC):
+                _plain = pack_decrypt(_blob, pack_key(menu_id, self._pack_secret()))
+                if not _plain.startswith(b'PK'):
+                    progress.close()
+                    self.show_centered_message("下载失败", "资源包解密失败（密钥不匹配或文件被改动）",
+                                               QMessageBox.Warning)
+                    return
+            else:
+                _plain = _blob
+            safe_extract_zip(_plain, extract_to)
+            try:
+                self._write_local_page_manifest(extract_to)
+            except Exception:
+                pass
             os.remove(local_zip)
 
             progress.setRange(0, 100)
@@ -12865,6 +13165,18 @@ class Firefly(QWidget):
             except Exception:
                 pass
 
+        # ----- 1.5 完整性：本地页面被改动/丢失 → 自动修复（服务端清单为准） -----
+        try:
+            _ok_pg, _msg_pg = self.verify_and_repair_page(menu_id)
+            if _msg_pg:
+                print(f"[卡池完整性] {_msg_pg}")
+                try:
+                    self._push_gacha_notice(_msg_pg, 'ok' if _ok_pg else 'error')
+                except Exception:
+                    pass
+        except Exception as _e:
+            print(f"[卡池完整性] 校验失败(忽略): {_e}")
+
         # ----- 2. 构建资源路径（缺页面先由内置基底生成；同步自定义物品图片） -----
         if not self._ensure_gacha_base(menu_id):
             pass  # 基底缺失时仍走原检查，提示页面文件不存在
@@ -13636,12 +13948,61 @@ class Firefly(QWidget):
         except Exception:
             return False
 
+    def _asset_registry_path(self):
+        return os.path.join(self._custom_asset_dir(), '.integrity.json')
+
+    def _asset_registry(self):
+        try:
+            with open(self._asset_registry_path(), 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    def _asset_register(self, dest, blob=None):
+        """登记自定义资源的哈希（之后用它发现本地被改动）"""
+        try:
+            if blob is None:
+                with open(dest, 'rb') as f:
+                    blob = f.read()
+            rel = os.path.relpath(dest, self._custom_asset_dir()).replace('\\', '/')
+            reg = self._asset_registry()
+            reg[rel] = hashlib.sha256(blob).hexdigest()
+            with open(self._asset_registry_path(), 'w', encoding='utf-8') as f:
+                json.dump(reg, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"[完整性] 登记资源失败: {e}")
+
+    def _asset_ok(self, dest):
+        """本地资源是否与登记的一致；被改动/登记缺失时删掉它（下次会自动重下）"""
+        try:
+            if not os.path.exists(dest):
+                return False
+            rel = os.path.relpath(dest, self._custom_asset_dir()).replace('\\', '/')
+            want = self._asset_registry().get(rel)
+            if not want:
+                return True            # 没有登记记录：按原逻辑放行（保持兼容）
+            with open(dest, 'rb') as f:
+                got = hashlib.sha256(f.read()).hexdigest()
+            if got == want:
+                return True
+            print(f"[完整性] 本地资源被改动，已删除待重下: {rel}")
+            os.remove(dest)
+            return False
+        except Exception:
+            return True
+
     def _download_custom_asset(self, rel, dest):
-        """下载服务端自定义资源到本地（已存在则跳过）"""
+        """下载服务端自定义资源到本地（已存在且未被改动则跳过）"""
         if not rel:
             return False
-        if os.path.exists(dest):
+        if os.path.exists(dest) and self._asset_ok(dest):
             return True
+        if os.path.exists(dest):
+            try:
+                os.remove(dest)        # 被改动/校验失败：删掉重下
+            except Exception:
+                pass
         url = self._custom_server_url(rel)
         if not url:
             return False
@@ -13654,6 +14015,7 @@ class Firefly(QWidget):
                 blob = resp.read()
             with open(dest, 'wb') as f:
                 f.write(blob)
+            self._asset_register(dest, blob)
             return True
         except Exception as e:
             print(f"[自定义资源] 下载失败 {url}: {e}")
