@@ -1384,6 +1384,14 @@ class ConnectionThread(QThread):
         self.version = version
         self.sock = None
         self._running = True
+        # 登录安全相关（由上层注入）：本地保存的口令（只用于算 SCRAM 应答，不上线）、
+        # 本机绑定 id、服务端在当前连接下发的 salt/迭代数
+        self.password = getattr(self, 'password', '') or ''
+        self.bind_id = getattr(self, 'bind_id', '') or ''
+        self.auth_salt = ''
+        self.auth_iterations = 120000
+        self.server_bound = False
+        self.login_ok_early = None
 
     def run(self):
         """子线程入口，执行所有网络操作"""
@@ -1393,6 +1401,63 @@ class ConnectionThread(QThread):
             self.sock.connect((self.host, self.port))
             self.sock.settimeout(None)
 
+            # ---------- 登录前握手（hello/nonce）----------
+            # 新服务端支持：回 salt/nonce → 已绑定账号用 SCRAM 应答（不在线上传明文口令）；
+            # 老服务端不支持：2.5 秒内收不到 hello_ok 就按老格式直接登录（兼容）。
+            _auth = None
+            _salt = ''
+            try:
+                self._send({'type': 'hello', 'data': {'uid': self.uid, 'userid': self.userid,
+                                                       'version': self.version}})
+                self.sock.settimeout(2.5)
+                _buf = b''
+                while b'\n' not in _buf:
+                    _d = self.sock.recv(65536)
+                    if not _d:
+                        break
+                    _buf += _d
+                self.sock.settimeout(None)
+                if b'\n' in _buf:
+                    _line, _rest = _buf.split(b'\n', 1)
+                    _msg = json.loads(_line.decode('utf-8', 'ignore') or '{}')
+                    if _msg.get('type') == 'hello_ok':
+                        _hd = _msg.get('data') or {}
+                        _salt = str(_hd.get('salt') or '')
+                        _nonce = str(_hd.get('nonce') or '')
+                        self.auth_salt = _salt
+                        self.auth_iterations = int(_hd.get('iterations') or 120000)
+                        self.server_bound = bool(_hd.get('bound'))
+                        try:
+                            _ff2 = getattr(self, 'firefly', None)
+                            if _ff2 is not None:      # 让上层也能拿到（/bind 时算校验值用）
+                                _ff2.auth_salt = _salt
+                                _ff2.auth_iterations = self.auth_iterations
+                        except Exception:
+                            pass
+                        if _salt and _nonce and self.password:
+                            # StoredKey = PBKDF2(口令, salt)；只把 HMAC(StoredKey, nonce) 发出去
+                            try:
+                                _sk = hashlib.pbkdf2_hmac(
+                                    'sha256', str(self.password).encode('utf-8'),
+                                    bytes.fromhex(_salt), self.auth_iterations)
+                                import hmac as _hmac
+                                _auth = {'proof': _hmac.new(
+                                    _sk, _nonce.encode('utf-8'), hashlib.sha256).hexdigest()}
+                            except Exception as _ae:
+                                print(f"[握手] 计算应答失败: {_ae}")
+                    elif _msg.get('type') == 'login_ok':
+                        # 老服务端把 hello 当成了别的消息却直接放行登录：交给上层处理
+                        self.login_ok_early = _msg.get('data') or {}
+            except socket.timeout:
+                pass
+            except Exception as _he:
+                print(f"[握手] 跳过（{_he}）")
+            finally:
+                try:
+                    self.sock.settimeout(None)
+                except Exception:
+                    pass
+
             # 发送登录消息
             login_msg = {
                 'type': 'login',
@@ -1401,9 +1466,12 @@ class ConnectionThread(QThread):
                     'uid': self.uid,
                     'name': self.name,
                     'country': self.country,
-                    'version': self.version
+                    'version': self.version,
+                    'bind_id': getattr(self, 'bind_id', '') or ''
                 }
             }
+            if _auth:
+                login_msg['data']['auth'] = _auth
             self._send(login_msg)
 
             # 开始监听（持续）
@@ -2073,7 +2141,21 @@ class MultiplayerClient(QObject):
     def connect_to_server(self, host, port, userid, uid, name, country=''):
         self.server_host = host
         self.server_port = port
+        # 登录安全：本地保存的口令（只用于算 SCRAM 应答，绝不上线）+ 本机绑定 id
+        _pwd_in, _bid_in = '', ''
+        try:
+            _ff = getattr(self, 'firefly', None)
+            if _ff is not None:
+                _pwd_in = str((getattr(_ff, 'current_user', None) or {}).get('password') or '')
+                try:
+                    _bid_in = str(_ff.load_bind_id() or '')
+                except Exception:
+                    _bid_in = ''
+        except Exception as _e:
+            print(f"[安全] 读取登录凭证失败: {_e}")
         self.conn_thread = ConnectionThread(host, port, userid, uid, name, country, CLIENT_VERSION)
+        self.conn_thread.password = _pwd_in
+        self.conn_thread.bind_id = _bid_in
         self.conn_thread.connection_success.connect(self._on_connection_success)
         self.conn_thread.connection_failed.connect(self._on_connection_failed)
         self.conn_thread.connection_closed.connect(self._on_connection_closed)
@@ -2114,6 +2196,24 @@ class MultiplayerClient(QObject):
             self.pack_secret = str(data.get('pack_secret') or '')
         except Exception:
             self.pack_secret = ''
+        # ---------- 设备绑定 / 受限会话（连接安全） ----------
+        try:
+            _bid = str(data.get('bind_id') or '')
+            if _bid:
+                self.save_bind_id(_bid)
+        except Exception as _e:
+            print(f"[安全] 处理 bind_id 失败: {_e}")
+        try:
+            if data.get('restricted'):
+                _reason = str(data.get('restricted_reason') or
+                              '本账号尚未绑定设备，当前为受限会话。')
+                print(f"[安全] 受限会话：{_reason}")
+                QTimer.singleShot(600, lambda: self.show_centered_message(
+                    "受限会话（设备未绑定）", _reason + "\n\n绑定方法：让管理员在服务器控制台执行"
+                    " /bindcode <你的玩家名>，然后在聊天框输入 /bind <绑定码>。",
+                    QMessageBox.Warning))
+        except Exception as _e2:
+            print(f"[安全] 受限提示失败: {_e2}")
 
         # 更新客户端状态
         self.connected = True
@@ -2160,8 +2260,84 @@ class MultiplayerClient(QObject):
         msg = {'type': 'chat', 'data': {'text': text}}
         self.conn_thread._send(msg)
 
+    def _server_bind_key(self):
+        """本机绑定信息按"哪个服务器"分开保存的键（哈希，不落 ip/端口）"""
+        try:
+            uid = getattr(self, 'server_uid', '') or ''
+            if uid:
+                return 'h' + hashlib.sha256(('FireflySrv|' + str(uid)).encode('utf-8')).hexdigest()[:16]
+            raw = '%s:%s' % (getattr(self, 'server_host', '') or '', getattr(self, 'server_web_port', '') or '')
+            if raw != ':':
+                return 'h' + hashlib.sha256(('FireflySrv|' + raw).encode('utf-8')).hexdigest()[:16]
+        except Exception:
+            pass
+        return 'hunknown'
+
+    def _bind_store_path(self):
+        return os.path.join(get_writable_dir(), 'device_bind.json')
+
+    def load_bind_id(self):
+        try:
+            with open(self._bind_store_path(), 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            return str((d or {}).get(self._server_bind_key()) or '')
+        except Exception:
+            return ''
+
+    def save_bind_id(self, bid):
+        try:
+            p = self._bind_store_path()
+            d = {}
+            if os.path.exists(p):
+                with open(p, 'r', encoding='utf-8') as f:
+                    d = json.load(f) or {}
+            if not isinstance(d, dict):
+                d = {}
+            d[self._server_bind_key()] = str(bid or '')
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+            print("[安全] 已保存本机绑定 id")
+        except Exception as e:
+            print(f"[安全] 保存绑定 id 失败: {e}")
+
+    def bind_with_code(self, code, silent=False):
+        """用绑定码绑定本机（顺带用本地保存的口令设置登录校验；明文口令不上线）"""
+        if not self.connected or not self.conn_thread:
+            if not silent:
+                self.show_centered_message("绑定失败", "未连接服务器", QMessageBox.Warning)
+            return False
+        payload = {'code': str(code or '').strip()}
+        try:
+            pwd = ''
+            try:
+                pwd = str((self.current_user or {}).get('password') or '')
+            except Exception:
+                pwd = ''
+            salt = str(getattr(self.conn_thread, 'auth_salt', '') or '')
+            if pwd and salt:
+                # 只发 salt + StoredKey（服务端也只存这两样）
+                iters = int(getattr(self.conn_thread, 'auth_iterations', 120000) or 120000)
+                sk = hashlib.pbkdf2_hmac('sha256', pwd.encode('utf-8'), bytes.fromhex(salt), iters)
+                payload['salt'] = salt
+                payload['key'] = sk.hex()
+        except Exception as e:
+            print(f"[绑定] 生成本地校验值失败(仅绑定设备): {e}")
+        self.conn_thread._send({'type': 'bind_device', 'data': payload})
+        return True
+
     def send_command(self, cmd):
         if not self.connected or not self.conn_thread:
+            return
+        # /bind <绑定码>：本地算好 SCRAM 校验值再发给服务端（不把明文口令发出去）
+        _c = str(cmd or '').strip()
+        if _c.lower().startswith('/bind') and not _c.lower().startswith('/bindcode'):
+            _parts = _c.split()
+            if len(_parts) >= 2:
+                self.bind_with_code(_parts[1])
+            else:
+                self.show_centered_message("绑定设备",
+                                           "用法：/bind <绑定码>\n绑定码请在服务器控制台执行 /bindcode <玩家> 获取（10 分钟有效）",
+                                           QMessageBox.Information)
             return
         self.conn_thread._send({'type': 'command', 'data': {'command': cmd}})
 
@@ -6309,6 +6485,7 @@ class ConvListDelegate(QStyledItemDelegate):
 
 # ==================== Minecraft 风格命令补全 ====================
 CHAT_COMMAND_SPECS = [
+    ('/bind', False, ['绑定码']),
     ('/help', False, []),
     ('/recall', False, ['消息ID']),
     ('/redeemstats', False, []),
@@ -11971,6 +12148,22 @@ class Firefly(QWidget):
             return
 
         # ---------- 卡池配置更新（服务端改动即时下发） ----------
+        if mtype == 'bind_result':
+            _bd = data or {}
+            if _bd.get('success'):
+                try:
+                    if _bd.get('bind_id'):
+                        self.save_bind_id(_bd.get('bind_id'))
+                    self.restricted = False
+                except Exception:
+                    pass
+                self.show_centered_message("绑定成功", str(_bd.get('message') or '本机已绑定该账号'),
+                                           QMessageBox.Information)
+            else:
+                self.show_centered_message("绑定失败", str(_bd.get('message') or '绑定失败'),
+                                           QMessageBox.Warning)
+            return
+
         if mtype == 'gacha_config':
             cfg = data.get('config')
             if isinstance(cfg, dict):
