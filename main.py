@@ -3879,6 +3879,20 @@ class ShopMainWindow(QDialog):
                     img = self.firefly.custom_item_image_path(fake)
                 except Exception:
                     img = None
+            if img is None:
+                # 商品记录里没图（老服务端下发的老数据）→ 用物品定义自己的展示图兜底，
+                # 否则自定义商品在商店里只会显示 🎁（用户反馈）
+                try:
+                    _iid = g.get('id')
+                    _it = next((x for x in (getattr(self.firefly, 'server_custom_items', None) or [])
+                                if isinstance(x, dict) and x.get('id') == _iid), None)
+                    if _it is None:
+                        _it = next((x for x in self.firefly.known_custom_items()
+                                    if isinstance(x, dict) and x.get('id') == _iid), None)
+                    if _it and _it.get('image'):
+                        img = self.firefly.custom_item_image_path(_it)
+                except Exception:
+                    img = None
             entry = {
                 "name": g.get('name') or g['id'],
                 "price": int(g.get('price') or 0),
@@ -14289,6 +14303,13 @@ class Firefly(QWidget):
         if not url:
             return False
         if not self._web_port_alive():
+            # 窗口程序没有 stdout，这种"图没下来"必须写进 firefly_client.log，
+            # 否则用户只会看到 emoji，谁也查不出为什么
+            try:
+                logging.warning("[自定义资源] Web 端口不可达，跳过下载 %s（host=%s port=%s）",
+                                rel, getattr(self, 'server_host', ''), getattr(self, 'server_web_port', ''))
+            except Exception:
+                pass
             return False
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -14301,6 +14322,10 @@ class Firefly(QWidget):
             return True
         except Exception as e:
             print(f"[自定义资源] 下载失败 {url}: {e}")
+            try:
+                logging.warning("[自定义资源] 下载失败 %s: %s", url, e)
+            except Exception:
+                pass
             return False
 
     def _custom_items_cache_path(self):
@@ -14335,9 +14360,12 @@ class Firefly(QWidget):
                     continue
                 try:
                     # ver 没变就直接命中缓存，不会重复联网
-                    self.custom_item_image_path(it)
-                except Exception:
-                    continue
+                    _p = self.custom_item_image_path(it)
+                    if not _p:
+                        logging.warning("[物品图片] 预取失败：%s（image=%s ver=%s）",
+                                        it.get('id'), it.get('image'), it.get('ver'))
+                except Exception as _e:
+                    logging.warning("[物品图片] 预取异常：%s（%s）", it.get('id'), _e)
         except Exception as e:
             print(f"[物品图片] 预取失败: {e}")
 
