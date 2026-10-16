@@ -2245,12 +2245,30 @@ class MultiplayerClient(QObject):
             self.firefly.online_signed_today = False
         self.login_success.emit(data)
 
+    def _reset_server_state(self):
+        """掉线后清掉服务端下发的东西（商品清单/物品表）。
+
+        单机模式绝不能显示服务器商品或服务器新增物品（用户要求）：
+        以前只在"获取商店数据"时按 is_online 判断，一旦标志过期/残留就会漏出来，
+        现在掉线即清空，单机下商店只剩原版两件。
+        """
+        try:
+            ff = self.firefly
+            if ff is not None:
+                ff.shop_goods = []
+                ff._shop_goods_seen = False
+                ff.server_custom_items = []
+        except Exception:
+            pass
+
     def _on_connection_failed(self, reason):
         self.connected = False
+        self._reset_server_state()
         self.login_failed.emit(reason)
 
     def _on_connection_closed(self):
         self.connected = False
+        self._reset_server_state()
         self.connection_changed.emit(False)
 
 
@@ -2351,6 +2369,7 @@ class MultiplayerClient(QObject):
             self.conn_thread.disconnect()
             self.conn_thread = None
         self.connected = False
+        self._reset_server_state()
         self.connection_changed.emit(False)
 
     def _process_message(self, msg):
@@ -9551,6 +9570,10 @@ class Firefly(QWidget):
         except Exception as e:
             print(f"[商店资源] 同步入口失败: {e}")
         try:
+            self.sync_custom_item_images()      # 物品图也一起预取（背包要用）
+        except Exception:
+            pass
+        try:
             if getattr(self, 'shop_window', None) is not None:
                 self.shop_window.reload_server_goods()
         except Exception:
@@ -14292,6 +14315,31 @@ class Firefly(QWidget):
                 json.dump(items, f, ensure_ascii=False)
         except Exception as e:
             print(f"[物品缓存] 写入失败: {e}")
+        # 顺手把物品图片也拉下来：背包/邮件一开就能显示真图，不用等点开菜单现下
+        self.sync_custom_item_images()
+
+    def sync_custom_item_images(self, items=None):
+        """预取所有自定义物品的展示图到 custom_assets/img/<id>_<ver>.png。
+
+        放在登录/热更新/商店同步时做（那时网络与端口状态最可靠），
+        这样背包里永远不会因为"当时没下到"而退化成 emoji。
+        """
+        try:
+            if self.mp_client is not None and not getattr(self.mp_client, 'connected', False):
+                return
+        except Exception:
+            pass
+        try:
+            for it in (items if isinstance(items, list) else self.known_custom_items()):
+                if not isinstance(it, dict) or not it.get('id'):
+                    continue
+                try:
+                    # ver 没变就直接命中缓存，不会重复联网
+                    self.custom_item_image_path(it)
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[物品图片] 预取失败: {e}")
 
     def known_custom_items(self):
         """当前可用的物品定义：优先服务端下发的，其次本地缓存（单机模式）"""
@@ -14357,14 +14405,7 @@ class Firefly(QWidget):
                 _iid = str(item_id)
                 _info = info if isinstance(info, dict) and info else next(
                     (x for x in self.known_custom_items() if x.get('id') == _iid), None)
-                if _info:
-                    try:
-                        p = self.custom_item_image_path(_info)      # 有缓存用缓存，在线则顺带补下
-                        if p and os.path.exists(p):
-                            return p
-                    except Exception:
-                        pass
-                # 兜底 1：版本化缓存 custom_assets/img/<id>_<ver>.png
+                # ① 版本化缓存（登录/热更新时已预取，命中就不联网）
                 try:
                     _ver = (_info or {}).get('ver') or 0
                     p = os.path.join(self._custom_asset_dir(), 'img', '%s_%s.png' % (_iid, _ver))
@@ -14372,13 +14413,25 @@ class Firefly(QWidget):
                         return p
                 except Exception:
                     pass
-                # 兜底 2：商店同步目录 server/<服务器码>/shop/self_area_img/<id>.png
-                try:
-                    _sdir = self._srv_shop_asset_dir()
-                    if _sdir:
-                        p = os.path.join(_sdir, '%s.png' % _iid)
-                        if os.path.exists(p):
+                # ② 没有就现下（按物品自己的 image 字段，ver 变即失效）
+                if _info:
+                    try:
+                        p = self.custom_item_image_path(_info)
+                        if p and os.path.exists(p):
                             return p
+                    except Exception:
+                        pass
+                # ③ 再兜一层：不管 ver 直接找该物品的最新缓存图
+                #    ⚠️ 这里绝不能去 server/<码>/shop/self_area_img 找 ——
+                #    那是"商店物品图标"（商品可能挂的是抽到展示图），
+                #    背包要的是物品自己上传的那张（用户反馈过用错图）。
+                try:
+                    _dir = os.path.join(self._custom_asset_dir(), 'img')
+                    _hits = [f for f in os.listdir(_dir)
+                             if f.startswith(_iid + '_') and f.endswith('.png')]
+                    if _hits:
+                        _hits.sort(key=lambda f: os.path.getmtime(os.path.join(_dir, f)))
+                        return os.path.join(_dir, _hits[-1])
                 except Exception:
                     pass
         except Exception as e:
@@ -14388,7 +14441,9 @@ class Firefly(QWidget):
     def _srv_shop_asset_dir(self):
         """server/<服务器码>/shop/self_area_img 目录（取不到返回 ''）
 
-        商店窗口没开时用 ShopMainWindow 的临时实例算（纯路径计算，不做 UI）。
+        只给商店窗口算路径用；**背包/邮件不要用它**（第138批：商店目录里可能是
+        抽到展示图，物品图必须用物品自己上传的那张）。商店窗口没开时用
+        ShopMainWindow 的临时实例算（纯路径计算，不做 UI）。
         """
         try:
             helper = getattr(self, 'shop_window', None)
