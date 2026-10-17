@@ -283,6 +283,56 @@ def _log_exception(exc_info=None):
         pass
 
 
+def safe_open_url(url, tag='链接'):
+    """安全地"用系统打开一个地址"：空/无效地址直接忽略并记日志。
+
+    以前某些菜单（type=url）数据为空时直接 `webbrowser.open('')`，
+    Windows 会弹一个系统框「Windows 找不到 '\' 文件。请确定拼写是否正确…」——
+    这个框不是我们的错误提示，用户只会觉得"又出 bug 了"。
+    """
+    try:
+        u = str(url or '').strip()
+        if len(u) < 6 or u in ('http://', 'https://', 'file://', 'about:', 'ms-appx:'):
+            try:
+                logging.warning("[打开链接] 忽略空/无效地址（%s）：%r", tag, url)
+            except Exception:
+                pass
+            return False
+        webbrowser.open(u)
+        return True
+    except Exception as e:
+        try:
+            logging.warning("[打开链接] 失败（%s）%r: %s", tag, url, e)
+        except Exception:
+            pass
+        return False
+
+
+def safe_startfile(path):
+    """安全地调用系统默认程序打开文件/文件夹（不存在或空路径直接忽略）"""
+    try:
+        p = str(path or '').strip()
+        if not p or not os.path.exists(p):
+            try:
+                logging.warning("[打开文件] 忽略不存在/空路径：%r", path)
+            except Exception:
+                pass
+            return False
+        if sys.platform == 'win32':
+            os.startfile(p)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', p])
+        else:
+            subprocess.Popen(['xdg-open', p])
+        return True
+    except Exception as e:
+        try:
+            logging.warning("[打开文件] 失败 %r: %s", path, e)
+        except Exception:
+            pass
+        return False
+
+
 def global_exception_hook(exc_type, exc_value, exc_tb):
     """全局未捕获异常钩子 - 加固版，优先使用原有资源，失败时降级"""
     log_path = os.path.join(get_writable_dir(), "firefly_crash.log")
@@ -10619,7 +10669,7 @@ class Firefly(QWidget):
             return
 
         if itype == 'url':
-            webbrowser.open(data)
+            safe_open_url(data, '菜单链接')
 
         elif itype == 'gacha':
             # 卡池页面由客户端内置基底直接生成（不再推送整个资源包）
@@ -10646,7 +10696,7 @@ class Firefly(QWidget):
             res_path = os.path.join(self.server_resource_dir, menu_id)
             index_path = os.path.join(res_path, 'index.html')
             if os.path.exists(index_path):
-                webbrowser.open(index_path)
+                safe_open_url(index_path, '本地页面')
             else:
                 self.show_centered_message("错误", "资源未下载或缺少 index.html", QMessageBox.Warning)
 
@@ -10729,7 +10779,7 @@ class Firefly(QWidget):
 
                 if sys.platform == 'win32':
 
-                    os.startfile(folder)
+                    safe_startfile(folder)
 
                 else:
 
@@ -11833,7 +11883,7 @@ class Firefly(QWidget):
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(html)
 
-            webbrowser.open(report_path)
+            safe_open_url(report_path, '收获报告')
 
         except Exception as e:
             import traceback
@@ -14057,7 +14107,7 @@ class Firefly(QWidget):
                             if os.path.exists(abs_path):
                                 try:
                                     if sys.platform == 'win32':
-                                        os.startfile(abs_path)
+                                        safe_startfile(abs_path)
                                     else:
                                         subprocess.Popen(['explorer', abs_path])
                                     self.send_response(200)
@@ -14169,7 +14219,7 @@ class Firefly(QWidget):
 
         threading.Thread(target=serve, daemon=True).start()
 
-        webbrowser.open(f"http://localhost:{port}/html/tools.html")
+        safe_open_url(f"http://localhost:{port}/html/tools.html", "工具箱")
 
     def play_music2(self):
         if pygame.mixer.get_num_channels() > 0:
